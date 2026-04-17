@@ -217,8 +217,10 @@ def test_help_command_sends_full_help(bot):
 
 
 def test_status_command_uses_payload_builder(bot, tmp_path, monkeypatch):
-    # operator-core's STATUS_PATH is a _LazyPath which lacks .read_text(); patch
-    # it to a tmp file so build_status_payload can read a real file.
+    # Point STATUS_PATH at a temp status.json so the default (~/.operator/data)
+    # isn't touched during tests. _LazyPath implements read_text/exists, so the
+    # real module-level constant works in production — see
+    # test_format_deploy_section_through_lazypath below for that regression.
     status_path = tmp_path / "status.json"
     status_path.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(discord_bot, "STATUS_PATH", status_path)
@@ -227,6 +229,41 @@ def test_status_command_uses_payload_builder(bot, tmp_path, monkeypatch):
     asyncio.run(bot.handle_message(message))
     payload = message.reply.await_args.args[0]
     assert "Operator V3 status" in payload
+
+
+def test_format_deploy_section_through_lazypath(tmp_path):
+    """Regression: _format_deploy_section must work when status_path is a
+    _LazyPath (the production module-level constant), not a real Path.
+
+    Prior to the Sprint 5 LazyPath fixes, _LazyPath lacked read_text() /
+    resolve() so this path crashed in any prod run where status.json existed.
+    """
+    from operator_core.discord_bot import _format_deploy_section
+    from operator_core.paths import _LazyPath
+
+    status_path = tmp_path / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "last_updated": "2026-04-17T06:00:00",
+                "services": {"green": 4, "yellow": 1, "red": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lazy = _LazyPath(lambda: status_path)
+
+    result = _format_deploy_section(lazy)
+    assert result is not None
+    assert "4 green" in result
+    assert "1 yellow" in result
+    assert "2 red" in result
+    assert "2026-04-17T06:00:00" in result
+
+    # And the missing-file branch must also work through the proxy.
+    missing = _LazyPath(lambda: tmp_path / "does-not-exist.json")
+    assert _format_deploy_section(missing) == "Deploys: no status file yet"
 
 
 def test_queued_command_creates_job_and_tracks_progress(bot, monkeypatch):
