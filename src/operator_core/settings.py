@@ -58,6 +58,21 @@ class HealthConfig:
 
 
 @dataclass(frozen=True)
+class RevenueConfig:
+    """Optional per-project revenue lookup for the /kruz revenue heartbeat.
+
+    provider: "stripe" | "supabase" | "none" (default: "none" — zeros).
+    signups_table / subscriptions_table: Supabase tables to COUNT rows
+    from (when provider is "supabase"). Either can be omitted to skip.
+    """
+
+    provider: str = "none"
+    signups_table: str | None = None
+    subscriptions_table: str | None = None
+    mrr_field: str | None = None  # column name holding per-row $/mo
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     slug: str
     path: Path
@@ -69,6 +84,7 @@ class ProjectConfig:
     autonomy_tier: str
     protected_patterns: list[str]
     auto_merge: bool = False
+    revenue: RevenueConfig | None = None
 
     @property
     def deploy_health_url(self) -> str:
@@ -243,6 +259,28 @@ def _project_from_dict(
     if not project_path.is_absolute():
         project_path = projects_root / project_path
 
+    revenue_raw = raw.get("revenue")
+    revenue_cfg: RevenueConfig | None = None
+    if isinstance(revenue_raw, dict):
+        revenue_cfg = RevenueConfig(
+            provider=str(revenue_raw.get("provider") or "none"),
+            signups_table=(
+                str(revenue_raw["signups_table"])
+                if revenue_raw.get("signups_table")
+                else None
+            ),
+            subscriptions_table=(
+                str(revenue_raw["subscriptions_table"])
+                if revenue_raw.get("subscriptions_table")
+                else None
+            ),
+            mrr_field=(
+                str(revenue_raw["mrr_field"])
+                if revenue_raw.get("mrr_field")
+                else None
+            ),
+        )
+
     return ProjectConfig(
         slug=str(raw["slug"]),
         path=project_path,
@@ -260,6 +298,7 @@ def _project_from_dict(
         autonomy_tier=str(raw["autonomy_tier"]),
         protected_patterns=[str(p) for p in raw.get("protected_patterns", [])],
         auto_merge=bool(raw.get("auto_merge", False)),
+        revenue=revenue_cfg,
     )
 
 

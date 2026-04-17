@@ -302,9 +302,9 @@ class JobRunner:
         job = self.store.update_job(job_id, status="running")
         try:
             if job.action == "morning":
-                return self._run_script_job(job, "morning-briefing.py")
+                return self._run_morning_briefing(job)
             if job.action == "review_prs":
-                return self._run_script_job(job, "pr-reviewer.py")
+                return self._run_pr_review(job)
             if job.action == "deploy_check":
                 return self._run_script_job(job, "deploy-checker.py")
             if job.action == "marketing_pulse":
@@ -330,6 +330,61 @@ class JobRunner:
                 status="failed",
                 metadata={**job.metadata, "error": redact_secrets(str(exc))},
             )
+
+    def _run_pr_review(self, job: JobRecord) -> JobRecord:
+        """Claude-reviewed PR comments across tracked repos."""
+        from . import pr_review as pr_review_mod
+
+        try:
+            result = pr_review_mod.run_once()
+        except Exception as exc:  # noqa: BLE001
+            return self.store.update_job(
+                job.id,
+                status="failed",
+                metadata={**job.metadata, "error": redact_secrets(str(exc))},
+            )
+        summary = (
+            f"reviewed={len(result.get('reviewed') or [])} "
+            f"new={result.get('new_prs', 0)} open={result.get('open_prs', 0)}"
+        )
+        return self.store.update_job(
+            job.id,
+            status="complete",
+            metadata={
+                **job.metadata,
+                "summary": summary,
+                "reviewed": result.get("reviewed"),
+            },
+        )
+
+    def _run_morning_briefing(self, job: JobRecord) -> JobRecord:
+        """Claude-authored morning brief → #claude-chat."""
+        from . import briefing as briefing_mod
+
+        try:
+            result = briefing_mod.run_once()
+        except Exception as exc:  # noqa: BLE001
+            return self.store.update_job(
+                job.id,
+                status="failed",
+                metadata={**job.metadata, "error": redact_secrets(str(exc))},
+            )
+        status = "complete"
+        error = result.get("error")
+        if error and not result.get("text"):
+            status = "failed"
+        return self.store.update_job(
+            job.id,
+            status=status,
+            cost_usd=float(result.get("cost_usd") or 0),
+            metadata={
+                **job.metadata,
+                "summary": (result.get("text") or "")[:1000],
+                "posted": result.get("posted"),
+                "projects_in_context": result.get("projects_in_context", 0),
+                "error": error,
+            },
+        )
 
     def _run_fleet(self, job: JobRecord) -> JobRecord:
         mode = job.action.replace("fleet_", "")

@@ -34,7 +34,7 @@ import requests
 
 from .settings import load_settings
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -314,6 +314,81 @@ def _git_activity(settings, now: datetime) -> list[dict[str, Any]]:
     return out
 
 
+def _supabase_count(table: str, *, select: str = "id") -> int:
+    """Best-effort count of rows in a Supabase table. 0 on any error.
+
+    Uses the REST `count=exact` trick with a `HEAD` request so no row data
+    comes back. Timeboxed at 2s so snapshot publishing never stalls.
+    """
+    url = os.environ.get("SUPABASE_URL") or os.environ.get(
+        "NEXT_PUBLIC_SUPABASE_URL"
+    )
+    key = (
+        os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+        or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    )
+    if not url or not key or not table:
+        return 0
+    try:
+        from urllib.request import Request, urlopen
+
+        endpoint = f"{url.rstrip('/')}/rest/v1/{table}?select={select}"
+        req = Request(
+            endpoint,
+            method="HEAD",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {key}",
+                "Prefer": "count=exact",
+                "Accept": "application/json",
+            },
+        )
+        with urlopen(req, timeout=2.0) as resp:
+            cr = resp.headers.get("Content-Range") or ""
+            # Format is e.g. "0-9/412" or "*/0"
+            if "/" in cr:
+                return int(cr.rsplit("/", 1)[1])
+    except Exception:  # noqa: BLE001
+        return 0
+    return 0
+
+
+def _revenue_7d(settings) -> list[dict[str, Any]]:
+    """One row per project with signup / subscription / mrr numbers.
+
+    Every project appears in the output — a zero row is a legitimate
+    "pre-revenue" state. The caller shows pre-revenue at $0 and the UI
+    reads it as "not earning yet" rather than "unknown".
+    """
+    out: list[dict[str, Any]] = []
+    for p in getattr(settings, "projects", []) or []:
+        slug = _redact_slug(p.slug)
+        entry = {
+            "slug": slug,
+            "signups_7d": 0,
+            "active_users_7d": 0,
+            "paying_7d": 0,
+            "mrr_usd": 0.0,
+        }
+        revenue = getattr(p, "revenue", None)
+        if revenue is None or revenue.provider == "none":
+            out.append(entry)
+            continue
+        # Supabase provider — count rows in the configured tables.
+        if revenue.provider == "supabase":
+            if revenue.signups_table:
+                entry["signups_7d"] = _supabase_count(revenue.signups_table)
+            if revenue.subscriptions_table:
+                paying = _supabase_count(revenue.subscriptions_table)
+                entry["paying_7d"] = paying
+                # If a per-row MRR field exists and there are payers,
+                # we can't SUM without a proper query; keep $0 until
+                # someone wires the SUM path explicitly.
+        out.append(entry)
+    return out
+
+
 def _tasks_panel() -> list[dict[str, Any]]:
     """Snapshot the scheduled-task enable/disable state + last-run."""
     try:
@@ -359,6 +434,8 @@ def build_snapshot(
     tasks = _tasks_panel()
     git_activity = _git_activity(settings, now)
     cost_7d = _cost_series_7d(db_path, now)
+    revenue_7d = _revenue_7d(settings)
+    mrr_7d_usd = round(sum(float(r.get("mrr_usd") or 0) for r in revenue_7d), 2)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -371,6 +448,7 @@ def build_snapshot(
             "cost_7d_usd": round(sum(d["usd"] for d in cost_7d), 2),
             "tasks_enabled": sum(1 for t in tasks if t["enabled"]),
             "tasks_total": len(tasks),
+            "mrr_7d_usd": mrr_7d_usd,
         },
         "watchdog": _watchdog_panel(status, watchdog_cfg, now),
         "jobs": _format_jobs(jobs, now),
@@ -379,6 +457,7 @@ def build_snapshot(
         "tasks": tasks,
         "git_activity": git_activity,
         "cost_series_7d": cost_7d,
+        "revenue_7d": revenue_7d,
         "daemon": {
             "pid": (status.get("daemon") or {}).get("pid"),
             "started_at": (status.get("daemon") or {}).get("started_at"),

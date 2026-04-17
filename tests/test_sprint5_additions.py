@@ -91,8 +91,8 @@ def test_list_all_tasks_merges_defaults_and_disabled(tmp_path):
         }
 
 
-def test_snapshot_v2_schema(tmp_path, monkeypatch):
-    """build_snapshot must emit schema_version=2 with the new sections."""
+def test_snapshot_v3_schema(tmp_path, monkeypatch):
+    """build_snapshot must emit schema_version=3 with revenue_7d present."""
     from operator_core import snapshot as snap_mod
     from operator_core.settings import (
         DaemonConfig, DeployConfig, HealthConfig, ProjectConfig, Settings,
@@ -134,13 +134,22 @@ def test_snapshot_v2_schema(tmp_path, monkeypatch):
         settings=settings,
     )
 
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert "tasks" in payload
     assert "git_activity" in payload
     assert "cost_series_7d" in payload
     assert len(payload["cost_series_7d"]) == 7  # zero-filled 7 days
     assert payload["summary"]["tasks_total"] == len(payload["tasks"])
     assert payload["summary"]["cost_7d_usd"] == 0.0
+
+    # v3 additions
+    assert "revenue_7d" in payload
+    assert len(payload["revenue_7d"]) == len(settings.projects)
+    for row in payload["revenue_7d"]:
+        assert set(row.keys()) >= {
+            "slug", "signups_7d", "active_users_7d", "paying_7d", "mrr_usd"
+        }
+    assert payload["summary"]["mrr_7d_usd"] == 0.0
 
 
 def test_pid_alive_rejects_garbage():
