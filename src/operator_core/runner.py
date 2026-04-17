@@ -751,7 +751,7 @@ def _default_merge_runner(project: ProjectConfig, branch: str, dry_run: bool) ->
 
 def _default_discord_notifier(channel: str, title: str, body: str, color: str) -> bool:
     try:
-        from utils.discord import notify_sync  # noqa: WPS433
+        from .utils.discord import notify_sync  # noqa: WPS433
     except Exception as exc:  # noqa: BLE001
         logger.warning("Discord utility unavailable: %s", exc)
         return False

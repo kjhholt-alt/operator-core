@@ -2,14 +2,12 @@
 
 Subcommands:
     operator init           Bootstrap ~/.operator/config.toml from the template.
+    operator run            Start the daemon (http + scheduler + snapshot + discord).
+    operator snapshot       Publish one snapshot to Supabase immediately.
     operator config path    Print the resolved config path.
     operator config show    Print the effective loaded config.
     operator doctor         Validate config + runtime env; exit 0 if healthy.
     operator version        Print version.
-
-More commands (run, status, schedule, etc.) will be wired once the daemon
-entrypoint is ported. For Sprint 0 the goal is just: someone can install
-the package and produce a valid config.
 """
 
 from __future__ import annotations
@@ -238,6 +236,31 @@ def _cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run(args: argparse.Namespace) -> int:
+    # Lazy import: keeps `operator init` / `operator doctor` fast and
+    # avoids pulling in sqlite / http deps just to bootstrap a config.
+    from . import daemon
+
+    return daemon.run(
+        host=args.host,
+        port=args.port,
+        no_discord=args.no_discord,
+        no_scheduler=args.no_scheduler,
+        no_snapshot=args.no_snapshot,
+        once=args.once,
+        snapshot_interval=args.snapshot_interval,
+        log_level=args.log_level,
+        log_file=args.log_file,
+    )
+
+
+def _cmd_snapshot(args: argparse.Namespace) -> int:
+    from . import snapshot
+
+    argv = ["dump"] if args.dump else ["publish"]
+    return snapshot.main(argv)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="operator",
@@ -262,6 +285,27 @@ def build_parser() -> argparse.ArgumentParser:
     # doctor
     p_doctor = sub.add_parser("doctor", help="Validate config + runtime env")
     p_doctor.set_defaults(func=_cmd_doctor)
+
+    # run
+    p_run = sub.add_parser("run", help="Start the operator daemon")
+    p_run.add_argument("--host", default=None, help="HTTP bind address (overrides config)")
+    p_run.add_argument("--port", type=int, default=None, help="HTTP port (overrides config)")
+    p_run.add_argument("--no-discord", action="store_true", help="Skip the Discord bot")
+    p_run.add_argument("--no-scheduler", action="store_true", help="Skip the cron scheduler")
+    p_run.add_argument("--no-snapshot", action="store_true", help="Skip the /kruz snapshot publisher")
+    p_run.add_argument("--once", action="store_true", help="Start, publish one snapshot, exit")
+    p_run.add_argument(
+        "--snapshot-interval", type=int, default=1800,
+        help="Snapshot cadence in seconds (default 1800 = 30 min)",
+    )
+    p_run.add_argument("--log-level", default="info", help="debug|info|warn|error")
+    p_run.add_argument("--log-file", type=Path, default=None, help="Log file path (default: data_dir/operator.log)")
+    p_run.set_defaults(func=_cmd_run)
+
+    # snapshot
+    p_snap = sub.add_parser("snapshot", help="Publish one snapshot immediately")
+    p_snap.add_argument("--dump", action="store_true", help="Print JSON only, don't publish")
+    p_snap.set_defaults(func=_cmd_snapshot)
 
     # version
     p_version = sub.add_parser("version", help="Print version")

@@ -16,6 +16,11 @@ from pathlib import Path
 from .settings import DEFAULT_DATA_DIR, DEFAULT_WORKTREES_DIR, load_settings
 
 
+# Compatibility constant — the python package dir. Legacy modules used
+# this to resolve bundled templates; still works for that.
+PACKAGE_ROOT: Path = Path(__file__).resolve().parent
+
+
 def _safe_settings():
     try:
         return load_settings()

@@ -195,7 +195,7 @@ class OperatorDiscordBot:
 
     async def _post_startup_notification(self) -> None:
         try:
-            from utils.discord import notify  # type: ignore
+            from .utils.discord import notify  # type: ignore
         except Exception:
             return
         start_ts = DAEMON_START_TS.isoformat() if DAEMON_START_TS else "unknown"

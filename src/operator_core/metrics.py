@@ -114,7 +114,7 @@ def _cost_today(costs_csv: Path) -> float:
 
 
 def _read_status(status_path: Path) -> dict[str, Any]:
-    from utils import status as status_mod
+    from .utils import status as status_mod
 
     return status_mod.load_or_default(status_path)
 

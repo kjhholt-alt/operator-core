@@ -182,7 +182,7 @@ class OperatorRequestHandler(BaseHTTPRequestHandler):
         return True
 
     def _ops_page(self) -> None:
-        from utils import status as status_mod  # lazy to avoid cycles
+        from .utils import status as status_mod  # lazy to avoid cycles
         from .templates import render_ops_page
 
         status_data = status_mod.load_or_default(self.server.status_path)

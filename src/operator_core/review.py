@@ -244,7 +244,7 @@ def generate_weekly_review(
     hook_blocks = gather_hook_blocks(hooks_log or DEFAULT_HOOKS_LOG, cutoff)
     cost_delta = gather_cost_delta(costs_csv or DEFAULT_COSTS_CSV, cutoff)
 
-    from utils import status as status_mod
+    from .utils import status as status_mod
 
     status_data = status_mod.load_or_default(status_path or STATUS_PATH)
     deploy_health = status_data.get("deploy_health") or {}
@@ -275,7 +275,7 @@ def generate_weekly_review(
 
 def _post_to_discord(markdown: str, week: str) -> bool:
     try:
-        from utils.discord import notify  # lazy
+        from .utils.discord import notify  # lazy
     except Exception:
         return False
     title = f"Operator weekly review — {week}"
