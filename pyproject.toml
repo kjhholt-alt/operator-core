@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "operator-core"
+version = "0.1.0"
+description = "Self-hosted AI operator daemon for multi-project founders. Background agents, scheduled recipes, Discord bot, portfolio brain."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Kruz Holt" }
+]
+keywords = ["claude", "claude-code", "ai-agents", "automation", "operator", "daemon"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "requests>=2.31",
+    "python-dotenv>=1.0",
+    "tomli>=2.0; python_version<'3.11'",
+]
+
+[project.optional-dependencies]
+discord = ["discord.py>=2.3"]
+dev = ["pytest>=7.4", "pytest-asyncio>=0.21"]
+
+[project.scripts]
+operator = "operator_core.cli:main"
+
+[project.urls]
+Homepage = "https://operator.dev"
+Source = "https://github.com/kjhholt-alt/operator-core"
+Issues = "https://github.com/kjhholt-alt/operator-core/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+operator_core = ["templates/*", "schema/*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
