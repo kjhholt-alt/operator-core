@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 
@@ -113,3 +114,77 @@ def test_summary_counts_and_sent_7d(tmp_path):
     assert summary["DRAFTING"] == 0
     assert summary["sent_7d"] == 1
     assert summary["unread"] == 2  # NEW + DRAFTING + READY; DRAFTING/READY are 0
+
+
+def test_close_thread_transitions_to_closed(tmp_path):
+    from operator_core.replies import ReplyStore, STATUS_CLOSED
+
+    store = ReplyStore(tmp_path / "replies.sqlite3")
+    thread = store.upsert_thread_for_incoming(
+        sender_email="close@example.com",
+        sender_name="Closer",
+        subject="not interested",
+        body_md="please remove me",
+    )
+    closed = store.close_thread(thread.thread_id)
+    assert closed.status == STATUS_CLOSED
+
+
+def test_remote_sync_upserts_thread_and_replaces_message_slice(tmp_path, monkeypatch):
+    from operator_core.replies import ReplyStore
+
+    calls: list[tuple[str, str, object]] = []
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+    def _record(method, url, **kwargs):
+        calls.append((method, url, kwargs.get("json")))
+        return _Resp()
+
+    monkeypatch.setenv("OPERATOR_REPLY_SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("OPERATOR_REPLY_SUPABASE_KEY", "service-role")
+    monkeypatch.setattr("operator_core.replies.requests.post", lambda url, **kwargs: _record("POST", url, **kwargs))
+    monkeypatch.setattr("operator_core.replies.requests.delete", lambda url, **kwargs: _record("DELETE", url, **kwargs))
+
+    store = ReplyStore(tmp_path / "replies.sqlite3")
+    thread = store.upsert_thread_for_incoming(
+        sender_email="sync@example.com",
+        sender_name="Sync",
+        subject="mirror me",
+        body_md="first inbound",
+    )
+    store.save_draft(thread.thread_id, body_md="draft v1")
+    store.save_draft(thread.thread_id, body_md="draft v2", dd_notes_md="keep latest")
+    store.mark_ready(thread.thread_id)
+
+    thread_posts = [payload for method, url, payload in calls if method == "POST" and url.endswith("/outreach_reply_threads")]
+    message_posts = [payload for method, url, payload in calls if method == "POST" and url.endswith("/outreach_reply_messages")]
+    message_deletes = [url for method, url, _ in calls if method == "DELETE" and "outreach_reply_messages" in url]
+
+    assert thread_posts, "thread mirror upsert never ran"
+    assert message_posts, "message mirror upsert never ran"
+    assert message_deletes, "message mirror replacement delete never ran"
+
+    latest_thread = thread_posts[-1][0]
+    assert latest_thread["thread_id"] == thread.thread_id
+    assert latest_thread["status"] == "READY"
+    assert latest_thread["latest_draft_preview"] == "draft v2"
+    latest_messages = message_posts[-1]
+    out_bodies = [m["body_md"] for m in latest_messages if m["direction"] == "out"]
+    assert out_bodies == ["draft v2"]
+
+
+def test_replies_parser_exposes_ready_and_close_commands():
+    from operator_core.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["replies", "mark-ready", "abc123"])
+    assert isinstance(args, argparse.Namespace)
+    assert args.replies_command == "mark-ready"
+    assert args.thread_id == "abc123"
+
+    args = parser.parse_args(["replies", "close", "deadbeef"])
+    assert args.replies_command == "close"
+    assert args.thread_id == "deadbeef"

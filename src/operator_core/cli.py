@@ -654,6 +654,20 @@ def _cmd_replies_mark_sent(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_replies_mark_ready(args: argparse.Namespace) -> int:
+    store = _replies_store()
+    thread = store.mark_ready(args.thread_id)
+    print(f"[replies] thread {thread.thread_id} marked READY")
+    return 0
+
+
+def _cmd_replies_close(args: argparse.Namespace) -> int:
+    store = _replies_store()
+    thread = store.close_thread(args.thread_id)
+    print(f"[replies] thread {thread.thread_id} marked CLOSED")
+    return 0
+
+
 def _cmd_demo_briefing(args: argparse.Namespace) -> int:
     from . import demo as demo_mod
 
@@ -818,6 +832,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_rm.add_argument("thread_id")
     p_rm.set_defaults(func=_cmd_replies_mark_sent)
+
+    p_rr = replies_sub.add_parser(
+        "mark-ready", help="Mark a drafted thread as READY for human send"
+    )
+    p_rr.add_argument("thread_id")
+    p_rr.set_defaults(func=_cmd_replies_mark_ready)
+
+    p_rc = replies_sub.add_parser(
+        "close", help="Close a thread (negative reply, resolved, or done)"
+    )
+    p_rc.add_argument("thread_id")
+    p_rc.set_defaults(func=_cmd_replies_close)
 
     # demo
     p_demo = sub.add_parser(

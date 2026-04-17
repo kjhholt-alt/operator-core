@@ -28,12 +28,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+import requests
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +58,8 @@ ALL_STATUSES = (
 
 # "Unread" from the operator's perspective: anything that needs action.
 UNREAD_STATUSES = (STATUS_NEW, STATUS_DRAFTING, STATUS_READY)
+
+_REMOTE_SYNC_TIMEOUT_SECONDS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +157,29 @@ def _thread_id(sender_email: str, subject: str) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
+def _reply_sync_env() -> tuple[str, str] | None:
+    """Return (url, service-role-key) for reply mirror sync, or None.
+
+    The reply mirror is write-only from the daemon side. Never fall back
+    to anon/public keys here because thread/message writes require the
+    service-role key.
+    """
+    url = (
+        os.environ.get("OPERATOR_REPLY_SUPABASE_URL")
+        or os.environ.get("SUPABASE_URL")
+        or os.environ.get("OPERATOR_SNAPSHOT_SUPABASE_URL")
+    )
+    key = (
+        os.environ.get("OPERATOR_REPLY_SUPABASE_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or os.environ.get("OPERATOR_SNAPSHOT_SUPABASE_KEY")
+        or os.environ.get("SUPABASE_KEY")
+    )
+    if not url or not key:
+        return None
+    return url.rstrip("/"), key
+
+
 class ReplyStore:
     """SQLite-backed reply ledger."""
 
@@ -172,6 +200,98 @@ class ReplyStore:
             conn.execute(MESSAGES_DDL)
             for stmt in INDEXES_DDL:
                 conn.execute(stmt)
+
+    def _latest_draft_preview(self, messages: Iterable[ReplyMessage]) -> str | None:
+        pending = [
+            m for m in messages
+            if m.direction == "out" and not m.sent_at and (m.body_md or "").strip()
+        ]
+        if not pending:
+            return None
+        return pending[-1].body_md[:500]
+
+    def _sync_thread_to_remote(self, thread_id: str) -> None:
+        """Best-effort mirror of one thread into Supabase.
+
+        Local SQLite remains the source of truth. Any remote failure is
+        logged and swallowed so reply ingestion/drafting never blocks on
+        Supabase availability.
+        """
+        remote = _reply_sync_env()
+        if remote is None:
+            return
+        url, key = remote
+        try:
+            thread = self.get_thread(thread_id)
+            messages = self.list_messages(thread_id)
+        except Exception as exc:  # noqa: BLE001
+            # If the local read itself fails, surface it as a warning and
+            # continue — write path already completed in SQLite.
+            print(f"[replies] remote sync skipped for {thread_id}: {exc}")
+            return
+
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+        }
+        thread_payload = {
+            "thread_id": thread.thread_id,
+            "lead_id": thread.lead_id,
+            "sender_email": thread.sender_email,
+            "sender_name": thread.sender_name,
+            "subject": thread.subject,
+            "first_received_at": thread.first_received_at,
+            "last_activity_at": thread.last_activity_at,
+            "status": thread.status,
+            "dd_notes_md": thread.dd_notes_md,
+            "latest_draft_preview": self._latest_draft_preview(messages),
+        }
+        message_payload = [
+            {
+                "id": m.id,
+                "thread_id": m.thread_id,
+                "direction": m.direction,
+                "sent_at": m.sent_at,
+                "received_at": m.received_at,
+                "subject": m.subject,
+                "body_md": m.body_md,
+                "meta_jsonb": m.meta,
+                "created_at": m.created_at,
+            }
+            for m in messages
+        ]
+        try:
+            requests.post(
+                f"{url}/rest/v1/outreach_reply_threads",
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                    "Prefer": "resolution=merge-duplicates,return=minimal",
+                },
+                json=[thread_payload],
+                timeout=_REMOTE_SYNC_TIMEOUT_SECONDS,
+            ).raise_for_status()
+            # Replace the thread's message slice so deleted/replaced local
+            # drafts don't linger remotely.
+            requests.delete(
+                f"{url}/rest/v1/outreach_reply_messages?thread_id=eq.{thread_id}",
+                headers={**headers, "Prefer": "return=minimal"},
+                timeout=_REMOTE_SYNC_TIMEOUT_SECONDS,
+            ).raise_for_status()
+            if message_payload:
+                requests.post(
+                    f"{url}/rest/v1/outreach_reply_messages",
+                    headers={
+                        **headers,
+                        "Content-Type": "application/json",
+                        "Prefer": "resolution=merge-duplicates,return=minimal",
+                    },
+                    json=message_payload,
+                    timeout=_REMOTE_SYNC_TIMEOUT_SECONDS,
+                ).raise_for_status()
+        except requests.RequestException as exc:
+            print(f"[replies] remote sync failed for {thread_id}: {exc}")
 
     # ---- threads -----------------------------------------------------------
 
@@ -244,7 +364,9 @@ class ReplyStore:
                     _now(),
                 ),
             )
-        return self.get_thread(tid)
+        thread = self.get_thread(tid)
+        self._sync_thread_to_remote(tid)
+        return thread
 
     def save_draft(
         self,
@@ -293,7 +415,9 @@ class ReplyStore:
                     now,
                 ),
             )
-        return self.get_thread(thread_id)
+        thread = self.get_thread(thread_id)
+        self._sync_thread_to_remote(thread_id)
+        return thread
 
     def mark_ready(self, thread_id: str) -> ReplyThread:
         """Draft is done; waiting on the human to hit send."""
@@ -304,7 +428,9 @@ class ReplyStore:
                 "WHERE thread_id = ?",
                 (STATUS_READY, _now(), thread_id),
             )
-        return self.get_thread(thread_id)
+        thread = self.get_thread(thread_id)
+        self._sync_thread_to_remote(thread_id)
+        return thread
 
     def mark_sent(self, thread_id: str, *, sent_at: str | None = None) -> ReplyThread:
         """Mark the latest pending outbound as sent; move status to SENT."""
@@ -322,7 +448,9 @@ class ReplyStore:
                 "WHERE thread_id = ?",
                 (STATUS_SENT, now, thread_id),
             )
-        return self.get_thread(thread_id)
+        thread = self.get_thread(thread_id)
+        self._sync_thread_to_remote(thread_id)
+        return thread
 
     def close_thread(self, thread_id: str) -> ReplyThread:
         with self._connect() as conn:
@@ -332,7 +460,9 @@ class ReplyStore:
                 "WHERE thread_id = ?",
                 (STATUS_CLOSED, _now(), thread_id),
             )
-        return self.get_thread(thread_id)
+        thread = self.get_thread(thread_id)
+        self._sync_thread_to_remote(thread_id)
+        return thread
 
     def get_thread(self, thread_id: str) -> ReplyThread:
         with self._connect() as conn:
