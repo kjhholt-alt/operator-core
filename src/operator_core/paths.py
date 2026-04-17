@@ -67,6 +67,45 @@ class _LazyPath:
     def mkdir(self, *args, **kwargs):
         return self._resolve().mkdir(*args, **kwargs)
 
+    def resolve(self, *args, **kwargs):
+        return self._resolve().resolve(*args, **kwargs)
+
+    def read_text(self, *args, **kwargs):
+        return self._resolve().read_text(*args, **kwargs)
+
+    def read_bytes(self):
+        return self._resolve().read_bytes()
+
+    def write_text(self, *args, **kwargs):
+        return self._resolve().write_text(*args, **kwargs)
+
+    def write_bytes(self, data):
+        return self._resolve().write_bytes(data)
+
+    def is_file(self):
+        return self._resolve().is_file()
+
+    def is_dir(self):
+        return self._resolve().is_dir()
+
+    def iterdir(self):
+        return self._resolve().iterdir()
+
+    def glob(self, pattern):
+        return self._resolve().glob(pattern)
+
+    def unlink(self, *args, **kwargs):
+        return self._resolve().unlink(*args, **kwargs)
+
+    def stat(self):
+        return self._resolve().stat()
+
+    def absolute(self):
+        return self._resolve().absolute()
+
+    def with_suffix(self, suffix):
+        return self._resolve().with_suffix(suffix)
+
     @property
     def parent(self):
         return self._resolve().parent
@@ -74,6 +113,18 @@ class _LazyPath:
     @property
     def name(self):
         return self._resolve().name
+
+    @property
+    def suffix(self):
+        return self._resolve().suffix
+
+    @property
+    def stem(self):
+        return self._resolve().stem
+
+    @property
+    def parts(self):
+        return self._resolve().parts
 
 
 def _projects_root() -> Path:

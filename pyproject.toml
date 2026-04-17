@@ -34,15 +34,17 @@ dependencies = [
 
 [project.optional-dependencies]
 discord = ["discord.py>=2.3"]
-dev = ["pytest>=7.4", "pytest-asyncio>=0.21"]
+status  = ["rich>=13.0"]
+dev     = ["pytest>=7.4", "pytest-asyncio>=0.21", "rich>=13.0"]
 
 [project.scripts]
 operator = "operator_core.cli:main"
 
 [project.urls]
-Homepage = "https://operator.dev"
-Source = "https://github.com/kjhholt-alt/operator-core"
-Issues = "https://github.com/kjhholt-alt/operator-core/issues"
+Homepage = "https://operator.buildkit.store"
+Source   = "https://github.com/kjhholt-alt/operator-core"
+Issues   = "https://github.com/kjhholt-alt/operator-core/issues"
+Docs     = "https://operator.buildkit.store/docs"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -261,6 +261,131 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
     return snapshot.main(argv)
 
 
+# ---------------------------------------------------------------------------
+# tasks
+# ---------------------------------------------------------------------------
+
+
+def _cmd_tasks_list(args: argparse.Namespace) -> int:
+    from . import scheduler as sched_mod
+
+    rows = sched_mod.list_all_tasks()
+    if args.json:
+        import json as _json
+        print(_json.dumps(rows, indent=2))
+        return 0
+
+    if not rows:
+        print("no tasks registered.")
+        return 0
+
+    # Tabular format: key | enabled | cadence | time | last_run | description
+    key_w  = max(len(r["key"]) for r in rows)
+    cad_w  = max(len(r["cadence"]) for r in rows)
+    time_w = max(len(str(r["time"])) for r in rows)
+
+    hdr = f"  {'KEY':<{key_w}}  {'ON':<3}  {'CADENCE':<{cad_w}}  {'TIME':<{time_w}}  {'LAST-RUN':<10}  DESCRIPTION"
+    print(hdr)
+    print("  " + "-" * (len(hdr) - 2))
+    for r in rows:
+        on = "on " if r["enabled"] else "off"
+        last = r["last_run"] or "-"
+        print(
+            f"  {r['key']:<{key_w}}  {on:<3}  {r['cadence']:<{cad_w}}  "
+            f"{str(r['time']):<{time_w}}  {last:<10}  {r['description']}"
+        )
+    return 0
+
+
+def _resolve_task(key: str):
+    from . import scheduler as sched_mod
+
+    t = sched_mod.find_task(key)
+    if t is not None:
+        return ("builtin", t)
+    # custom schedule?
+    for entry in sched_mod.list_schedules():
+        if isinstance(entry, dict) and entry.get("name") == key:
+            return ("custom", entry)
+    return (None, None)
+
+
+def _cmd_tasks_run(args: argparse.Namespace) -> int:
+    kind, t = _resolve_task(args.key)
+    if kind is None:
+        print(f"no task with key {args.key!r}. Try `operator tasks list`.", file=sys.stderr)
+        return 2
+
+    try:
+        s = load_settings(reload=True)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+
+    from .runner import JobRunner
+    from .store import JobStore
+
+    store = JobStore(s.db_path)
+    runner = JobRunner(store, settings=s)
+
+    if kind == "builtin":
+        action, prompt, project = t.action, t.prompt, t.project
+    else:
+        action = t.get("command", "unknown")
+        prompt = ""
+        project = None
+
+    job = store.create_job(
+        action,
+        prompt=prompt,
+        project=project,
+        metadata={"schedule": args.key, "source": "cli"},
+    )
+    print(f"[run] job_id={job.id}  action={action}")
+    try:
+        runner.run(job.id)
+    except Exception as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
+    print(f"[done] job_id={job.id}")
+    return 0
+
+
+def _cmd_tasks_enable(args: argparse.Namespace) -> int:
+    from . import scheduler as sched_mod
+
+    kind, _ = _resolve_task(args.key)
+    if kind is None:
+        print(f"no task with key {args.key!r}", file=sys.stderr)
+        return 2
+    changed = sched_mod.enable_task(args.key)
+    print(f"{'enabled' if changed else 'already enabled'}: {args.key}")
+    return 0
+
+
+def _cmd_tasks_disable(args: argparse.Namespace) -> int:
+    from . import scheduler as sched_mod
+
+    kind, _ = _resolve_task(args.key)
+    if kind is None:
+        print(f"no task with key {args.key!r}", file=sys.stderr)
+        return 2
+    changed = sched_mod.disable_task(args.key)
+    print(f"{'disabled' if changed else 'already disabled'}: {args.key}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    from . import status_tui
+
+    return status_tui.render(once=args.once, json_mode=args.json)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="operator",
@@ -306,6 +431,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_snap = sub.add_parser("snapshot", help="Publish one snapshot immediately")
     p_snap.add_argument("--dump", action="store_true", help="Print JSON only, don't publish")
     p_snap.set_defaults(func=_cmd_snapshot)
+
+    # tasks
+    p_tasks = sub.add_parser("tasks", help="List / run / enable / disable scheduled tasks")
+    tasks_sub = p_tasks.add_subparsers(dest="tasks_command", required=True)
+
+    p_tasks_list = tasks_sub.add_parser("list", help="Show all scheduled tasks")
+    p_tasks_list.add_argument("--json", action="store_true", help="Emit JSON instead of a table")
+    p_tasks_list.set_defaults(func=_cmd_tasks_list)
+
+    p_tasks_run = tasks_sub.add_parser("run", help="Run a task immediately, out of cadence")
+    p_tasks_run.add_argument("key", help="Task key from `operator tasks list`")
+    p_tasks_run.set_defaults(func=_cmd_tasks_run)
+
+    p_tasks_enable = tasks_sub.add_parser("enable", help="Enable a task (resume cadence)")
+    p_tasks_enable.add_argument("key", help="Task key")
+    p_tasks_enable.set_defaults(func=_cmd_tasks_enable)
+
+    p_tasks_disable = tasks_sub.add_parser("disable", help="Disable a task (stop cadence)")
+    p_tasks_disable.add_argument("key", help="Task key")
+    p_tasks_disable.set_defaults(func=_cmd_tasks_disable)
+
+    # status
+    p_status = sub.add_parser("status", help="Terminal dashboard (daemon + tasks + snapshot)")
+    p_status.add_argument("--once", action="store_true", help="Print once and exit (no live refresh)")
+    p_status.add_argument("--json", action="store_true", help="Emit JSON instead of a rendered table")
+    p_status.set_defaults(func=_cmd_status)
 
     # version
     p_version = sub.add_parser("version", help="Print version")

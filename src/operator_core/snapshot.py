@@ -23,15 +23,18 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
 
 from .settings import load_settings
+
+SCHEMA_VERSION = 2
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -230,6 +233,109 @@ def _deploy_health(status: dict[str, Any], settings) -> list[dict[str, Any]]:
     return out
 
 
+def _cost_series_7d(db_path: Path, now: datetime) -> list[dict[str, Any]]:
+    """Per-day spend over the last 7 days, oldest -> newest.
+
+    Always returns 7 entries (zero-filled if no db or no matching rows) so
+    the /kruz sparkline has a stable layout.
+    """
+    rows: list[dict[str, Any]] = []
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cutoff = (now - timedelta(days=7)).isoformat()
+            cur.execute(
+                "SELECT substr(created_at, 1, 10) AS day, "
+                "SUM(COALESCE(cost_usd,0)) AS usd, COUNT(*) AS n "
+                "FROM jobs WHERE created_at >= ? GROUP BY day ORDER BY day ASC",
+                (cutoff,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            conn.close()
+        except sqlite3.DatabaseError:
+            rows = []
+
+    by_day = {r["day"]: r for r in rows}
+    out: list[dict[str, Any]] = []
+    for i in range(6, -1, -1):
+        day = (now - timedelta(days=i)).date().isoformat()
+        r = by_day.get(day)
+        out.append({
+            "day": day,
+            "usd": round(float(r["usd"]) if r else 0.0, 4),
+            "jobs": int(r["n"]) if r else 0,
+        })
+    return out
+
+
+def _git_activity(settings, now: datetime) -> list[dict[str, Any]]:
+    """Per-project git heartbeat: commits in last 7 days + last commit age.
+
+    Uses a 2s subprocess timeout per project to avoid stalling the snapshot
+    publisher on a slow/hung git process.
+    """
+    out: list[dict[str, Any]] = []
+    since = (now - timedelta(days=7)).isoformat()
+
+    for p in settings.projects:
+        path = p.path
+        entry = {
+            "slug": _redact_slug(p.slug),
+            "commits_7d": 0,
+            "last_commit_iso": None,
+            "last_commit_age": "never",
+        }
+        try:
+            if not (path / ".git").exists():
+                out.append(entry)
+                continue
+            cr = subprocess.run(
+                ["git", "-C", str(path), "rev-list", "--count", f"--since={since}", "HEAD"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if cr.returncode == 0:
+                entry["commits_7d"] = int((cr.stdout or "0").strip() or 0)
+
+            lc = subprocess.run(
+                ["git", "-C", str(path), "log", "-1", "--format=%cI"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if lc.returncode == 0:
+                last = (lc.stdout or "").strip()
+                if last:
+                    entry["last_commit_iso"] = last
+                    entry["last_commit_age"] = _age_label(last, now)
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+            pass
+        out.append(entry)
+
+    return out
+
+
+def _tasks_panel() -> list[dict[str, Any]]:
+    """Snapshot the scheduled-task enable/disable state + last-run."""
+    try:
+        from . import scheduler as sched_mod
+
+        rows = sched_mod.list_all_tasks()
+        # Drop fields the /kruz page doesn't need, keep redaction to slugs only.
+        return [
+            {
+                "key": r["key"],
+                "cadence": r["cadence"],
+                "time": r["time"],
+                "enabled": r["enabled"],
+                "last_run": r["last_run"],
+                "description": r["description"],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
 def build_snapshot(
     *,
     status_path: Path,
@@ -250,18 +356,29 @@ def build_snapshot(
         if ts:
             ok_count += 1
 
+    tasks = _tasks_panel()
+    git_activity = _git_activity(settings, now)
+    cost_7d = _cost_series_7d(db_path, now)
+
     return {
+        "schema_version": SCHEMA_VERSION,
         "generated_at": now.isoformat(),
         "summary": {
             "projects": len(settings.projects),
             "tracked_sections": len(WATCHDOG_SECTION_KEYS),
             "jobs_24h": len(jobs),
             "cost_24h_usd": round(total_cost_24h, 2),
+            "cost_7d_usd": round(sum(d["usd"] for d in cost_7d), 2),
+            "tasks_enabled": sum(1 for t in tasks if t["enabled"]),
+            "tasks_total": len(tasks),
         },
         "watchdog": _watchdog_panel(status, watchdog_cfg, now),
         "jobs": _format_jobs(jobs, now),
         "deploy_health": _deploy_health(status, settings),
         "portfolio": _portfolio(settings),
+        "tasks": tasks,
+        "git_activity": git_activity,
+        "cost_series_7d": cost_7d,
         "daemon": {
             "pid": (status.get("daemon") or {}).get("pid"),
             "started_at": (status.get("daemon") or {}).get("started_at"),

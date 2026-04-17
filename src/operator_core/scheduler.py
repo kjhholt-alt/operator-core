@@ -35,15 +35,35 @@ class ScheduledTask:
     cadence: str = "daily"
     project: str | None = None
     prompt: str = ""
+    description: str = ""
 
 
 DEFAULT_TASKS = [
-    ScheduledTask("morning-briefing", "morning", "06:00"),
-    ScheduledTask("pr-review", "review_prs", "06:10"),
-    ScheduledTask("deploy-check", "deploy_check", "06:20"),
-    ScheduledTask("marketing-pulse", "marketing_pulse", "06:30"),
-    ScheduledTask("ag-market-pulse", "deck_ag_market_pulse", "06:40", cadence="monthly", project="ag-market-pulse"),
-    ScheduledTask("cost-report", "cost_report", "21:00", cadence="weekly"),
+    ScheduledTask(
+        "morning-briefing", "morning", "06:00",
+        description="Cross-project morning briefing - pipeline status, PRs, deploys",
+    ),
+    ScheduledTask(
+        "pr-review", "review_prs", "06:10",
+        description="Auto-review open PRs across all tracked repos",
+    ),
+    ScheduledTask(
+        "deploy-check", "deploy_check", "06:20",
+        description="Ping every project deploy URL and flag anything non-200",
+    ),
+    ScheduledTask(
+        "marketing-pulse", "marketing_pulse", "06:30",
+        description="Daily marketing metrics + outreach pipeline report",
+    ),
+    ScheduledTask(
+        "ag-market-pulse", "deck_ag_market_pulse", "06:40",
+        cadence="monthly", project="ag-market-pulse",
+        description="Monthly ag market intel deck (PPTX + email)",
+    ),
+    ScheduledTask(
+        "cost-report", "cost_report", "21:00", cadence="weekly",
+        description="Weekly Claude / infra spend breakdown",
+    ),
 ]
 
 
@@ -80,6 +100,8 @@ class MorningOpsScheduler:
         state = self._load_state()
         launched: list[str] = []
         for task in self.tasks:
+            if is_task_disabled(task.key):
+                continue
             if not self._due(task, now, state):
                 continue
             job = self.store.create_job(task.action, prompt=task.prompt, project=task.project, metadata={"schedule": task.key})
@@ -231,3 +253,116 @@ def format_schedule_list(path: Path = SCHEDULE_CONFIG_PATH) -> str:
         command = entry.get("command", "?")
         lines.append(f"- `{name}` ({cron}) -> {command}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Enable / disable per-task toggle (layered on top of DEFAULT_TASKS)
+# ---------------------------------------------------------------------------
+#
+# Disabled task keys live in `schedule.json` under top-level "disabled": [].
+# MorningOpsScheduler.tick() skips tasks whose key appears in that set.
+# This lets `operator tasks disable morning-briefing` stop the daemon
+# from launching a job without editing source or touching Task Scheduler.
+
+
+def _load_disabled(path: Path = SCHEDULE_CONFIG_PATH) -> set[str]:
+    cfg = load_schedule_config(path)
+    raw = cfg.get("disabled") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(k) for k in raw}
+
+
+def _save_disabled(disabled: set[str], path: Path = SCHEDULE_CONFIG_PATH) -> None:
+    cfg = load_schedule_config(path)
+    payload = {
+        "version": SCHEDULE_CONFIG_VERSION,
+        "schedules": list(cfg.get("schedules") or []),
+        "disabled": sorted(disabled),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def is_task_disabled(key: str, path: Path = SCHEDULE_CONFIG_PATH) -> bool:
+    """Return True if the given DEFAULT_TASKS key is user-disabled."""
+    return key in _load_disabled(path)
+
+
+def disable_task(key: str, path: Path = SCHEDULE_CONFIG_PATH) -> bool:
+    """Disable a task. Returns True if the state changed."""
+    disabled = _load_disabled(path)
+    if key in disabled:
+        return False
+    disabled.add(key)
+    _save_disabled(disabled, path)
+    return True
+
+
+def enable_task(key: str, path: Path = SCHEDULE_CONFIG_PATH) -> bool:
+    """Enable a task. Returns True if the state changed."""
+    disabled = _load_disabled(path)
+    if key not in disabled:
+        return False
+    disabled.remove(key)
+    _save_disabled(disabled, path)
+    return True
+
+
+def list_all_tasks(
+    state_path: Path = SCHEDULER_STATE_PATH,
+    config_path: Path = SCHEDULE_CONFIG_PATH,
+) -> list[dict[str, Any]]:
+    """Merge DEFAULT_TASKS + custom schedules into one user-facing list.
+
+    Each entry:
+      { "key", "action", "time", "cadence", "project", "description",
+        "enabled", "last_run" (period key or None), "kind": "builtin"|"custom" }
+    """
+    disabled = _load_disabled(config_path)
+
+    # Last-run state for built-ins lives in scheduler-state.json.
+    try:
+        state_raw = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    except json.JSONDecodeError:
+        state_raw = {}
+
+    out: list[dict[str, Any]] = []
+    for t in DEFAULT_TASKS:
+        out.append({
+            "key": t.key,
+            "action": t.action,
+            "time": t.time_hhmm,
+            "cadence": t.cadence,
+            "project": t.project,
+            "description": t.description,
+            "enabled": t.key not in disabled,
+            "last_run": state_raw.get(t.key),
+            "kind": "builtin",
+        })
+
+    for entry in list_schedules(config_path):
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name", "?")
+        out.append({
+            "key": name,
+            "action": entry.get("command", "?"),
+            "time": entry.get("cron", "?"),
+            "cadence": "custom",
+            "project": None,
+            "description": entry.get("description", ""),
+            "enabled": name not in disabled,
+            "last_run": state_raw.get(name),
+            "kind": "custom",
+        })
+
+    return out
+
+
+def find_task(key: str) -> ScheduledTask | None:
+    """Look up a DEFAULT_TASK by key."""
+    for t in DEFAULT_TASKS:
+        if t.key == key:
+            return t
+    return None
