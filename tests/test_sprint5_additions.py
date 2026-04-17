@@ -91,8 +91,8 @@ def test_list_all_tasks_merges_defaults_and_disabled(tmp_path):
         }
 
 
-def test_snapshot_v3_schema(tmp_path, monkeypatch):
-    """build_snapshot must emit schema_version=3 with revenue_7d present."""
+def test_snapshot_v4_schema(tmp_path, monkeypatch):
+    """build_snapshot must emit schema_version=4 with replies + revenue."""
     from operator_core import snapshot as snap_mod
     from operator_core.settings import (
         DaemonConfig, DeployConfig, HealthConfig, ProjectConfig, Settings,
@@ -134,7 +134,7 @@ def test_snapshot_v3_schema(tmp_path, monkeypatch):
         settings=settings,
     )
 
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert "tasks" in payload
     assert "git_activity" in payload
     assert "cost_series_7d" in payload
@@ -150,6 +150,17 @@ def test_snapshot_v3_schema(tmp_path, monkeypatch):
             "slug", "signups_7d", "active_users_7d", "paying_7d", "mrr_usd"
         }
     assert payload["summary"]["mrr_7d_usd"] == 0.0
+
+    # v4 additions — reply ledger shape is always present, zero-filled
+    # when the ledger is empty.
+    assert "replies_summary" in payload
+    assert "recent_replies" in payload
+    rs = payload["replies_summary"]
+    assert set(rs.keys()) >= {"unread", "drafting", "ready", "sent_7d"}
+    assert rs["unread"] == 0
+    assert payload["summary"]["replies_unread"] == 0
+    assert payload["summary"]["replies_sent_7d"] == 0
+    assert payload["recent_replies"] == []
 
 
 def test_pid_alive_rejects_garbage():

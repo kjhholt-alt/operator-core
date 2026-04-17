@@ -34,7 +34,7 @@ import requests
 
 from .settings import load_settings
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -389,6 +389,55 @@ def _revenue_7d(settings) -> list[dict[str, Any]]:
     return out
 
 
+def _replies_summary(settings) -> dict[str, Any]:
+    """Summarize the reply ledger for the snapshot payload.
+
+    Returns zero-filled keys + [] recent on any error so /kruz always
+    has stable shape to render.
+    """
+    empty = {
+        "unread": 0,
+        "drafting": 0,
+        "ready": 0,
+        "sent_7d": 0,
+        "recent": [],
+    }
+    try:
+        from .replies import ReplyStore
+
+        data_dir = getattr(settings, "data_dir", None)
+        if data_dir is None:
+            return empty
+        store = ReplyStore(Path(str(data_dir)) / "replies.sqlite3")
+    except Exception:  # noqa: BLE001
+        return empty
+
+    try:
+        summary = store.summary()
+        threads = store.list_threads(limit=3)
+    except Exception:  # noqa: BLE001
+        return empty
+
+    recent = [
+        {
+            "thread_id": t.thread_id,
+            "sender": t.sender_name or t.sender_email,
+            "subject": (t.subject or "")[:80],
+            "status": t.status,
+            "last_activity_at": t.last_activity_at,
+        }
+        for t in threads
+    ]
+
+    return {
+        "unread": int(summary.get("unread", 0)),
+        "drafting": int(summary.get("DRAFTING", 0)),
+        "ready": int(summary.get("READY", 0)),
+        "sent_7d": int(summary.get("sent_7d", 0)),
+        "recent": recent,
+    }
+
+
 def _tasks_panel() -> list[dict[str, Any]]:
     """Snapshot the scheduled-task enable/disable state + last-run."""
     try:
@@ -436,6 +485,7 @@ def build_snapshot(
     cost_7d = _cost_series_7d(db_path, now)
     revenue_7d = _revenue_7d(settings)
     mrr_7d_usd = round(sum(float(r.get("mrr_usd") or 0) for r in revenue_7d), 2)
+    replies = _replies_summary(settings)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -449,6 +499,8 @@ def build_snapshot(
             "tasks_enabled": sum(1 for t in tasks if t["enabled"]),
             "tasks_total": len(tasks),
             "mrr_7d_usd": mrr_7d_usd,
+            "replies_unread": replies["unread"],
+            "replies_sent_7d": replies["sent_7d"],
         },
         "watchdog": _watchdog_panel(status, watchdog_cfg, now),
         "jobs": _format_jobs(jobs, now),
@@ -458,6 +510,13 @@ def build_snapshot(
         "git_activity": git_activity,
         "cost_series_7d": cost_7d,
         "revenue_7d": revenue_7d,
+        "replies_summary": {
+            "unread": replies["unread"],
+            "drafting": replies["drafting"],
+            "ready": replies["ready"],
+            "sent_7d": replies["sent_7d"],
+        },
+        "recent_replies": replies["recent"],
         "daemon": {
             "pid": (status.get("daemon") or {}).get("pid"),
             "started_at": (status.get("daemon") or {}).get("started_at"),

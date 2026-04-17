@@ -562,6 +562,98 @@ def _cmd_handoff(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _replies_store():
+    from .replies import ReplyStore
+
+    settings = load_settings()
+    return ReplyStore(settings.data_dir / "replies.sqlite3")
+
+
+def _cmd_replies_list(args: argparse.Namespace) -> int:
+    store = _replies_store()
+    threads = store.list_threads(status=getattr(args, "status", None), limit=50)
+    if not threads:
+        print("no reply threads yet")
+        return 0
+    for t in threads:
+        name = t.sender_name or t.sender_email
+        subj = (t.subject or "(no subject)")[:60]
+        print(
+            f"  [{t.status:<8}] {t.thread_id}  {name[:24]:<24}  "
+            f"{subj}"
+        )
+    summary = store.summary()
+    print(
+        f"\n  unread={summary.get('unread', 0)}  "
+        f"drafting={summary.get('DRAFTING', 0)}  "
+        f"ready={summary.get('READY', 0)}  "
+        f"sent_7d={summary.get('sent_7d', 0)}"
+    )
+    return 0
+
+
+def _cmd_replies_show(args: argparse.Namespace) -> int:
+    store = _replies_store()
+    try:
+        thread = store.get_thread(args.thread_id)
+    except KeyError:
+        print(f"unknown thread_id: {args.thread_id}", file=sys.stderr)
+        return 1
+    print(f"thread: {thread.thread_id}")
+    print(f"status: {thread.status}")
+    print(f"sender: {thread.sender_name or thread.sender_email} <{thread.sender_email}>")
+    print(f"subject: {thread.subject}")
+    print(f"first: {thread.first_received_at}")
+    print(f"last:  {thread.last_activity_at}")
+    if thread.dd_notes_md:
+        print("\n--- dd notes ---")
+        print(thread.dd_notes_md)
+    for m in store.list_messages(thread.thread_id):
+        ts = m.received_at or m.sent_at or m.created_at
+        print(f"\n--- {m.direction.upper()} {ts} ---")
+        print(m.body_md or "(empty)")
+    return 0
+
+
+def _cmd_replies_add_incoming(args: argparse.Namespace) -> int:
+    store = _replies_store()
+    body = args.body or (sys.stdin.read() if not sys.stdin.isatty() else "")
+    thread = store.upsert_thread_for_incoming(
+        sender_email=args.sender,
+        sender_name=args.name,
+        subject=args.subject,
+        body_md=body,
+    )
+    print(
+        f"[replies] thread {thread.thread_id} "
+        f"status={thread.status} sender={thread.sender_email}"
+    )
+    return 0
+
+
+def _cmd_replies_save_draft(args: argparse.Namespace) -> int:
+    store = _replies_store()
+    body = args.body or (sys.stdin.read() if not sys.stdin.isatty() else "")
+    if not body.strip():
+        print("error: no draft body (pass --body or pipe on stdin)", file=sys.stderr)
+        return 1
+    thread = store.save_draft(
+        args.thread_id,
+        body_md=body,
+        subject=args.subject,
+        dd_notes_md=args.dd,
+    )
+    print(f"[replies] draft saved; status now {thread.status}")
+    return 0
+
+
+def _cmd_replies_mark_sent(args: argparse.Namespace) -> int:
+    store = _replies_store()
+    thread = store.mark_sent(args.thread_id)
+    print(f"[replies] thread {thread.thread_id} marked SENT")
+    return 0
+
+
 def _cmd_demo_briefing(args: argparse.Namespace) -> int:
     from . import demo as demo_mod
 
@@ -688,6 +780,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Clear current-sprint.json after writing the handoff",
     )
     p_handoff.set_defaults(func=_cmd_handoff)
+
+    # replies — outreach reply ledger
+    p_replies = sub.add_parser(
+        "replies", help="Inspect + manage inbound outreach reply threads"
+    )
+    replies_sub = p_replies.add_subparsers(dest="replies_command", required=True)
+
+    p_rl = replies_sub.add_parser("list", help="List reply threads (most recent first)")
+    p_rl.add_argument("--status", help="Filter: NEW / DRAFTING / READY / SENT / CLOSED")
+    p_rl.set_defaults(func=_cmd_replies_list)
+
+    p_rs = replies_sub.add_parser("show", help="Print one thread with every message")
+    p_rs.add_argument("thread_id")
+    p_rs.set_defaults(func=_cmd_replies_show)
+
+    p_ra = replies_sub.add_parser(
+        "add-incoming", help="Record an inbound reply (pass --body or pipe on stdin)"
+    )
+    p_ra.add_argument("--sender", required=True, help="Sender email")
+    p_ra.add_argument("--name", help="Sender display name")
+    p_ra.add_argument("--subject", required=True, help="Subject line")
+    p_ra.add_argument("--body", help="Body markdown (omit to read stdin)")
+    p_ra.set_defaults(func=_cmd_replies_add_incoming)
+
+    p_rd = replies_sub.add_parser(
+        "save-draft", help="Save an outbound draft for a thread (DRAFTING status)"
+    )
+    p_rd.add_argument("thread_id")
+    p_rd.add_argument("--body", help="Draft body markdown (omit to read stdin)")
+    p_rd.add_argument("--subject", help="Optional subject override")
+    p_rd.add_argument("--dd", help="Due-diligence notes (markdown)")
+    p_rd.set_defaults(func=_cmd_replies_save_draft)
+
+    p_rm = replies_sub.add_parser(
+        "mark-sent", help="Mark the latest pending outbound as sent"
+    )
+    p_rm.add_argument("thread_id")
+    p_rm.set_defaults(func=_cmd_replies_mark_sent)
 
     # demo
     p_demo = sub.add_parser(
