@@ -386,6 +386,189 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return status_tui.render(once=args.once, json_mode=args.json)
 
 
+# ---------------------------------------------------------------------------
+# sprint + handoff
+# ---------------------------------------------------------------------------
+
+
+def _try_load_settings():
+    """Load settings, or return None on any error (so sprint tooling works
+    even before `operator init`)."""
+    try:
+        return load_settings(reload=True)
+    except ConfigError:
+        return None
+
+
+def _resolve_projects_root(settings) -> Path:
+    if settings and getattr(settings, "projects_root", None):
+        return Path(settings.projects_root)
+    # Fallback: current working directory.
+    return Path.cwd()
+
+
+def _resolve_data_dir(settings) -> Path:
+    if settings and getattr(settings, "data_dir", None):
+        return Path(settings.data_dir)
+    return Path.home() / ".operator" / "data"
+
+
+def _cmd_sprint_start(args: argparse.Namespace) -> int:
+    from . import sprint as sprint_mod
+
+    settings = _try_load_settings()
+    data_dir = _resolve_data_dir(settings)
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    goal = args.goal.strip() if args.goal else ""
+    if not goal:
+        print("operator sprint start: provide a goal in quotes", file=sys.stderr)
+        return 2
+
+    state, created = sprint_mod.start_sprint(
+        goal, settings=settings, data_dir=data_dir, title=args.title
+    )
+    if args.json:
+        import json as _json
+        print(_json.dumps({
+            "created": created,
+            "state": state.to_dict(),
+        }, indent=2))
+        return 0
+
+    if created:
+        print(f"[sprint] started at {state.started_at_iso}")
+    else:
+        print(f"[sprint] already running since {state.started_at_iso}")
+    print(f"  goal: {state.goal}")
+    print(f"  tracked repos: {len(state.git_heads)}")
+    for slug, sha in sorted(state.git_heads.items()):
+        short = sha[:10] if sha else "-"
+        branch = state.branches.get(slug, "?")
+        print(f"    - {slug:<22} {branch:<18} {short}")
+    return 0
+
+
+def _cmd_sprint_status(args: argparse.Namespace) -> int:
+    from . import sprint as sprint_mod
+
+    settings = _try_load_settings()
+    data_dir = _resolve_data_dir(settings)
+    state = sprint_mod.load_state(data_dir)
+    if state is None:
+        if args.json:
+            import json as _json
+            print(_json.dumps({"active": False}, indent=2))
+            return 0
+        print("no active sprint. Start one with `operator sprint start \"<goal>\"`")
+        return 0
+
+    elapsed = sprint_mod.elapsed_minutes(state)
+    rows = sprint_mod.status_rows(state, settings=settings)
+    banner = sprint_mod.sweet_spot_banner(elapsed)
+
+    if args.json:
+        import json as _json
+        print(_json.dumps({
+            "active": True,
+            "state": state.to_dict(),
+            "elapsed_minutes": round(elapsed, 1),
+            "rows": rows,
+            "banner": banner,
+        }, indent=2))
+        return 0
+
+    print(f"[sprint] goal: {state.goal}")
+    print(f"  started: {state.started_at_iso}")
+    print(f"  elapsed: {elapsed:.0f} min")
+    if banner:
+        print(f"  {banner}")
+    if rows:
+        print()
+        slug_w = max(len(r["slug"]) for r in rows)
+        print(f"  {'SLUG':<{slug_w}}  COMMITS  FILES  DIRTY  NOTE")
+        for r in rows:
+            dirty = "yes" if r["dirty"] else "no"
+            note = r.get("note") or ""
+            print(
+                f"  {r['slug']:<{slug_w}}  "
+                f"{r['commits']:>7}  {r['files']:>5}  {dirty:<5}  {note}"
+            )
+    return 0
+
+
+def _cmd_sprint_resume(args: argparse.Namespace) -> int:
+    from . import sprint as sprint_mod
+
+    settings = _try_load_settings()
+    projects_root = _resolve_projects_root(settings)
+    text = sprint_mod.resume_text(projects_root)
+    if text is None:
+        print(
+            f"no HANDOFF_*.md found in {projects_root}. "
+            "Run `operator handoff` first.",
+            file=sys.stderr,
+        )
+        return 1
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+    return 0
+
+
+def _cmd_handoff(args: argparse.Namespace) -> int:
+    from . import sprint as sprint_mod
+
+    settings = _try_load_settings()
+    projects_root = _resolve_projects_root(settings)
+    data_dir = _resolve_data_dir(settings)
+    state = sprint_mod.load_state(data_dir)
+
+    path, body = sprint_mod.generate_handoff_file(
+        state=state,
+        settings=settings,
+        projects_root=projects_root,
+        title=args.title,
+    )
+    print(f"[handoff] wrote {path}")
+
+    if not args.no_discord:
+        try:
+            from .utils.discord import notify
+            paste = sprint_mod._paste_blob(
+                state=state,
+                title=args.title or path.name,
+            )
+            footer = f"operator handoff | {path.name}"
+            notify(
+                channel="projects",
+                title=f"Sprint handoff: {path.name}",
+                body=paste,
+                color="green",
+                footer=footer,
+            )
+            print("[handoff] posted paste-blob to #projects")
+        except Exception as exc:  # pragma: no cover - best-effort notify
+            print(f"[handoff] discord post skipped: {exc}", file=sys.stderr)
+
+    if args.clear:
+        sprint_mod.clear_state(data_dir)
+        print("[handoff] cleared current-sprint state")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# demo briefing
+# ---------------------------------------------------------------------------
+
+
+def _cmd_demo_briefing(args: argparse.Namespace) -> int:
+    from . import demo as demo_mod
+
+    settings = _try_load_settings()
+    return demo_mod.run_briefing(settings)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="operator",
@@ -457,6 +640,64 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--once", action="store_true", help="Print once and exit (no live refresh)")
     p_status.add_argument("--json", action="store_true", help="Emit JSON instead of a rendered table")
     p_status.set_defaults(func=_cmd_status)
+
+    # sprint
+    p_sprint = sub.add_parser(
+        "sprint",
+        help="Record and track a focused work session (start/status/resume)",
+    )
+    sprint_sub = p_sprint.add_subparsers(dest="sprint_command", required=True)
+
+    p_sprint_start = sprint_sub.add_parser(
+        "start", help="Record current git heads and start the sprint clock"
+    )
+    p_sprint_start.add_argument(
+        "goal", help="One-line description of what this sprint is trying to do"
+    )
+    p_sprint_start.add_argument("--title", default=None, help="Optional sprint title")
+    p_sprint_start.add_argument("--json", action="store_true")
+    p_sprint_start.set_defaults(func=_cmd_sprint_start)
+
+    p_sprint_status = sprint_sub.add_parser(
+        "status", help="Elapsed time + commits since sprint start"
+    )
+    p_sprint_status.add_argument("--json", action="store_true")
+    p_sprint_status.set_defaults(func=_cmd_sprint_status)
+
+    p_sprint_resume = sprint_sub.add_parser(
+        "resume", help="Print the newest HANDOFF_*.md from projects_root"
+    )
+    p_sprint_resume.set_defaults(func=_cmd_sprint_resume)
+
+    # handoff
+    p_handoff = sub.add_parser(
+        "handoff",
+        help="Write HANDOFF_<ts>.md + post paste-blob to Discord",
+    )
+    p_handoff.add_argument(
+        "--title", default=None, help="Optional handoff title (default auto-generated)"
+    )
+    p_handoff.add_argument(
+        "--no-discord",
+        action="store_true",
+        help="Skip posting the paste-blob to the #projects webhook",
+    )
+    p_handoff.add_argument(
+        "--clear",
+        action="store_true",
+        help="Clear current-sprint.json after writing the handoff",
+    )
+    p_handoff.set_defaults(func=_cmd_handoff)
+
+    # demo
+    p_demo = sub.add_parser(
+        "demo", help="Cinematic terminal briefings (demo-safe, <5s runtime)"
+    )
+    demo_sub = p_demo.add_subparsers(dest="demo_command", required=True)
+    p_demo_briefing = demo_sub.add_parser(
+        "briefing", help="Live portfolio briefing — header + heartbeat + ticker"
+    )
+    p_demo_briefing.set_defaults(func=_cmd_demo_briefing)
 
     # version
     p_version = sub.add_parser("version", help="Print version")
