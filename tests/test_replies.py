@@ -170,7 +170,7 @@ def test_remote_sync_upserts_thread_and_replaces_message_slice(tmp_path, monkeyp
     latest_thread = thread_posts[-1][0]
     assert latest_thread["thread_id"] == thread.thread_id
     assert latest_thread["status"] == "READY"
-    assert latest_thread["latest_draft_preview"] == "draft v2"
+    assert "latest_draft_preview" not in latest_thread
     latest_messages = message_posts[-1]
     out_bodies = [m["body_md"] for m in latest_messages if m["direction"] == "out"]
     assert out_bodies == ["draft v2"]

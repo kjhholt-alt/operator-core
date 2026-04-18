@@ -34,7 +34,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import requests
 
@@ -201,15 +201,6 @@ class ReplyStore:
             for stmt in INDEXES_DDL:
                 conn.execute(stmt)
 
-    def _latest_draft_preview(self, messages: Iterable[ReplyMessage]) -> str | None:
-        pending = [
-            m for m in messages
-            if m.direction == "out" and not m.sent_at and (m.body_md or "").strip()
-        ]
-        if not pending:
-            return None
-        return pending[-1].body_md[:500]
-
     def _sync_thread_to_remote(self, thread_id: str) -> None:
         """Best-effort mirror of one thread into Supabase.
 
@@ -245,7 +236,6 @@ class ReplyStore:
             "last_activity_at": thread.last_activity_at,
             "status": thread.status,
             "dd_notes_md": thread.dd_notes_md,
-            "latest_draft_preview": self._latest_draft_preview(messages),
         }
         message_payload = [
             {
