@@ -563,6 +563,15 @@ def _cmd_handoff(args: argparse.Namespace) -> int:
 
 
 def _replies_store():
+    # Load .env so the reply mirror env (OPERATOR_REPLY_SUPABASE_URL/KEY
+    # or the SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY fallbacks) is visible
+    # when the CLI is invoked outside the daemon (which loads .env in
+    # daemon.run()). Without this, every CLI-driven write silently skipped
+    # the Supabase mirror.
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     from .replies import ReplyStore
 
     settings = load_settings()
@@ -590,6 +599,48 @@ def _cmd_replies_list(args: argparse.Namespace) -> int:
         f"sent_7d={summary.get('sent_7d', 0)}"
     )
     return 0
+
+
+def _cmd_replies_sync_all(args: argparse.Namespace) -> int:
+    """Backfill every local thread into the Supabase reply mirror.
+
+    Idempotent — Supabase upserts on (thread_id) for threads and on (id)
+    for messages, and the per-thread message slice is wiped + re-inserted
+    so deleted local drafts don't linger remotely.
+
+    Useful when the mirror env vars were unset during inbound activity,
+    so the live daemon's per-write sync silently no-op'd.
+    """
+    from .replies import _reply_sync_env
+
+    store = _replies_store()
+    env = _reply_sync_env()
+    if env is None:
+        print(
+            "error: reply mirror env not configured. Set "
+            "OPERATOR_REPLY_SUPABASE_URL and OPERATOR_REPLY_SUPABASE_KEY "
+            "(or fall back to SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY).",
+            file=sys.stderr,
+        )
+        return 1
+
+    threads = store.list_threads(limit=10_000)
+    if not threads:
+        print("[replies sync-all] local ledger is empty -- nothing to mirror.")
+        return 0
+
+    ok = 0
+    failed = 0
+    for t in threads:
+        try:
+            store._sync_thread_to_remote(t.thread_id)  # noqa: SLF001
+            ok += 1
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            print(f"  [fail] {t.thread_id}: {exc}", file=sys.stderr)
+
+    print(f"[replies sync-all] mirrored {ok}/{len(threads)} threads, {failed} failed.")
+    return 0 if failed == 0 else 1
 
 
 def _cmd_replies_show(args: argparse.Namespace) -> int:
@@ -844,6 +895,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_rc.add_argument("thread_id")
     p_rc.set_defaults(func=_cmd_replies_close)
+
+    p_rsync = replies_sub.add_parser(
+        "sync-all",
+        help="Backfill every local thread into the Supabase reply mirror (idempotent)",
+    )
+    p_rsync.set_defaults(func=_cmd_replies_sync_all)
 
     # demo
     p_demo = sub.add_parser(
