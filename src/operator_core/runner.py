@@ -545,10 +545,11 @@ class JobRunner:
             )
 
     def _run_script_job(self, job: JobRecord, script_name: str, timeout: int = 900) -> JobRecord:
+        scripts_dir = PROJECTS_ROOT / "operator-scripts"
         if " " in script_name:
-            result = _run_command(f"{sys.executable} {script_name}", PACKAGE_ROOT, timeout=timeout)
+            result = _run_command(f"{sys.executable} {script_name}", scripts_dir, timeout=timeout)
         else:
-            result = _run_command([sys.executable, str(PACKAGE_ROOT / script_name)], PACKAGE_ROOT, timeout=timeout)
+            result = _run_command([sys.executable, str(scripts_dir / script_name)], scripts_dir, timeout=timeout)
         status = "complete" if result.exit_code == 0 else "failed"
         return self.store.update_job(
             job.id,

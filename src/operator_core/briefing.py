@@ -495,6 +495,16 @@ def run_once(
         posted = False
         error = error or f"discord notify failed: {exc}"
 
+    if not error:
+        try:
+            _write_legacy_briefing_section(
+                settings=settings,
+                cost=cost,
+                projects_in_context=len(context.get("projects") or []),
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     return {
         "prompt": prompt,
         "text": text,
@@ -503,3 +513,29 @@ def run_once(
         "posted": posted,
         "projects_in_context": len(context.get("projects") or []),
     }
+
+
+def _write_legacy_briefing_section(*, settings, cost: float, projects_in_context: int) -> None:
+    """Mirror legacy `morning-briefing.py` write so V3 watchdog stays green.
+
+    The V3 watchdog reads `<projects_root>/.operator-status.json` and pages
+    when the `briefing` section's timestamp goes stale. Operator-core's
+    in-process briefing replaced the legacy script but didn't inherit the
+    status-write — leaving the section permanently stale.
+    """
+    import json
+
+    if settings is None or getattr(settings, "projects_root", None) is None:
+        return
+    target = Path(settings.projects_root) / ".operator-status.json"
+    try:
+        existing = json.loads(target.read_text(encoding="utf-8")) if target.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        existing = {}
+    existing["briefing"] = {
+        "status": "ok",
+        "active_projects": projects_in_context,
+        "cost": round(cost, 4),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
