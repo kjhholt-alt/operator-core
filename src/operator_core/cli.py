@@ -254,6 +254,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_revenue(args: argparse.Namespace) -> int:
+    from . import revenue as rev_mod
+    argv: list[str] = []
+    if args.post_discord:
+        argv.append("--post-discord")
+    if args.top:
+        argv.append(f"--top={args.top}")
+    return rev_mod.main(argv)
+
+
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     from . import snapshot
 
@@ -771,6 +781,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_snap = sub.add_parser("snapshot", help="Publish one snapshot immediately")
     p_snap.add_argument("--dump", action="store_true", help="Print JSON only, don't publish")
     p_snap.set_defaults(func=_cmd_snapshot)
+
+    # revenue cockpit (sprint 2026-04-23)
+    p_rev = sub.add_parser("revenue", help="Daily ranked revenue actions across all projects")
+    p_rev.add_argument("--post-discord", action="store_true", help="Also post to #claude-chat")
+    p_rev.add_argument("--top", type=int, default=10, help="Top N cross-project actions to show")
+    p_rev.set_defaults(func=_cmd_revenue)
 
     # tasks
     p_tasks = sub.add_parser("tasks", help="List / run / enable / disable scheduled tasks")
