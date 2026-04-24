@@ -16,6 +16,11 @@ def test_parse_morning_and_deploy_commands():
     assert parse_operator_command("!op fleet status").action == "fleet_status"
     assert parse_operator_command("!op fleet check").action == "fleet_check"
     assert parse_operator_command("!op fleet weakest").action == "fleet_weakest"
+    assert parse_operator_command("!op leads").action == "lead_digest"
+    assert parse_operator_command("!op leads digest").action == "lead_digest"
+    assert parse_operator_command("!op tonight").action == "nightly_demand_plan"
+    assert parse_operator_command("!op demand").action == "demand_review"
+    assert parse_operator_command("!op growth review").action == "demand_review"
 
 
 def test_parse_rejects_non_operator_message():

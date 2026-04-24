@@ -28,6 +28,30 @@ def _seed_status(path):
     status_mod.set_deploy_health("dealbrain", "warn", path)
     status_mod.record_hook_block("destructive", "rm -rf /", path)
     status_mod.record_hook_block("force-push", "git push --force", path)
+    status_mod.write_status(
+        "lead_ledger",
+        {
+            "open_count": 12,
+            "high_intent_uncontacted": 4,
+            "stale_high_intent": 2,
+        },
+        path,
+    )
+    status_mod.write_status(
+        "demand_os",
+        {
+            "top_score": 93,
+            "watch_sources": [{"source_table": "db_waitlist"}, {"source_table": "vr_waitlist"}],
+        },
+        path,
+    )
+    status_mod.write_status(
+        "nightly_demand_plan",
+        {
+            "running_experiments": 1,
+        },
+        path,
+    )
 
 
 def _seed_costs(path):
@@ -62,6 +86,12 @@ def test_render_metrics_has_all_metric_families(tmp_path):
     assert 'operator_deploy_health{project="dealbrain",state="warn"} 1' in text
     assert "operator_hook_blocks_total 2" in text
     assert "operator_cost_usd_today 0.6000" in text
+    assert "operator_leads_open 12" in text
+    assert "operator_leads_high_intent_uncontacted 4" in text
+    assert "operator_leads_stale_high_intent 2" in text
+    assert "operator_demand_top_score 93" in text
+    assert "operator_demand_running_experiments 1" in text
+    assert "operator_demand_watch_sources 2" in text
 
 
 def test_render_metrics_stable_across_job_transitions(tmp_path):

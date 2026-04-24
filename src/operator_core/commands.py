@@ -37,6 +37,9 @@ def help_text() -> str:
         "__Morning Ops__",
         "`!op morning` - run morning briefing now",
         "`!op review prs` - run PR reviewer",
+        "`!op leads` - sync signup queue and write local follow-up digest metrics",
+        "`!op tonight` - write the signup-first nightly plan",
+        "`!op demand` - write weekly demand scoreboard and experiment backlog",
         "",
         "__Build__",
         "`!op build <project>: <request>` - worktree PR factory (dry-run default)",
@@ -96,6 +99,12 @@ def parse_operator_command(message: str) -> ParsedCommand:
         return ParsedCommand(action="morning")
     if lowered == "review prs":
         return ParsedCommand(action="review_prs")
+    if lowered in {"leads", "lead digest", "leads digest"}:
+        return ParsedCommand(action="lead_digest")
+    if lowered in {"tonight", "night plan", "nightly", "nightly demand"}:
+        return ParsedCommand(action="nightly_demand_plan")
+    if lowered in {"demand", "demand review", "growth review"}:
+        return ParsedCommand(action="demand_review")
     if lowered == "deploy check":
         return ParsedCommand(action="deploy_check")
     if lowered == "jobs":

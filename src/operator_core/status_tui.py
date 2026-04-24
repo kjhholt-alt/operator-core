@@ -173,6 +173,7 @@ def render(*, once: bool = True, json_mode: bool = False) -> int:
 
 def _collect(settings: Settings) -> dict[str, Any]:
     from . import scheduler as sched_mod
+    status_data = _read_json(Path(str(settings.status_path)))
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -184,6 +185,9 @@ def _collect(settings: Settings) -> dict[str, Any]:
         "tasks": sched_mod.list_all_tasks(),
         "jobs_recent": _recent_jobs(settings, 10),
         "snapshot": _snapshot_summary(),
+        "lead_ledger": status_data.get("lead_ledger") or {},
+        "demand_os": status_data.get("demand_os") or {},
+        "nightly_demand_plan": status_data.get("nightly_demand_plan") or {},
     }
 
 
@@ -219,6 +223,32 @@ def _render_plain(payload: dict[str, Any]) -> None:
     if not payload["jobs_recent"]:
         print("  (none)")
     line()
+
+    leads = payload.get("lead_ledger") or {}
+    if leads:
+        print("LEADS")
+        print(
+            f"  open={leads.get('open_count', '-')}  "
+            f"new_24h={leads.get('new_24h', '-')}  "
+            f"high_intent={leads.get('high_intent_uncontacted', '-')}  "
+            f"stale={leads.get('stale_high_intent', '-')}"
+        )
+        product_counts = leads.get("counts_by_product") or {}
+        if product_counts:
+            print("  products: " + ", ".join(f"{k}={v}" for k, v in sorted(product_counts.items())))
+        line()
+
+    demand = payload.get("demand_os") or {}
+    nightly = payload.get("nightly_demand_plan") or {}
+    if demand or nightly:
+        print("DEMAND")
+        print(
+            f"  top={demand.get('top_product') or nightly.get('focus_product') or '-'}  "
+            f"score={demand.get('top_score', '-')}  "
+            f"running={nightly.get('running_experiments', '-')}  "
+            f"watch_sources={len(demand.get('watch_sources') or nightly.get('watch_sources') or [])}"
+        )
+        line()
 
     snap = payload["snapshot"]
     if snap:
@@ -302,6 +332,38 @@ def _render_rich(payload: dict[str, Any]) -> None:
     else:
         jobs_tbl.add_row("-", "-", "(no recent jobs)", "-")
     console.print(Panel(jobs_tbl, title="RECENT JOBS", border_style="cyan"))
+
+    leads = payload.get("lead_ledger") or {}
+    if leads:
+        leads_tbl = Table.grid(padding=(0, 2))
+        leads_tbl.add_column(justify="right", style="dim")
+        leads_tbl.add_column()
+        leads_tbl.add_row("open", str(leads.get("open_count", "-")))
+        leads_tbl.add_row("new_24h", str(leads.get("new_24h", "-")))
+        leads_tbl.add_row("high_intent", str(leads.get("high_intent_uncontacted", "-")))
+        leads_tbl.add_row("stale", str(leads.get("stale_high_intent", "-")))
+        product_counts = leads.get("counts_by_product") or {}
+        if product_counts:
+            leads_tbl.add_row(
+                "products",
+                ", ".join(f"{k}={v}" for k, v in sorted(product_counts.items())),
+            )
+        console.print(Panel(leads_tbl, title="LEADS", border_style="cyan"))
+
+    demand = payload.get("demand_os") or {}
+    nightly = payload.get("nightly_demand_plan") or {}
+    if demand or nightly:
+        demand_tbl = Table.grid(padding=(0, 2))
+        demand_tbl.add_column(justify="right", style="dim")
+        demand_tbl.add_column()
+        demand_tbl.add_row("top", str(demand.get("top_product") or nightly.get("focus_product") or "-"))
+        demand_tbl.add_row("score", str(demand.get("top_score", "-")))
+        demand_tbl.add_row("running", str(nightly.get("running_experiments", "-")))
+        demand_tbl.add_row(
+            "watch_sources",
+            str(len(demand.get("watch_sources") or nightly.get("watch_sources") or [])),
+        )
+        console.print(Panel(demand_tbl, title="DEMAND", border_style="cyan"))
 
     snap = payload["snapshot"]
     if snap:

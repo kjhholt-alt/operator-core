@@ -7,6 +7,7 @@ import json
 import pytest
 
 from operator_core.scheduler import (
+    DEFAULT_TASKS,
     SCHEDULE_CONFIG_VERSION,
     ScheduleConfigError,
     add_schedule,
@@ -144,3 +145,27 @@ def test_shipped_template_file_is_valid():
     config = load_schedule_config(SCHEDULE_CONFIG_PATH)
     assert config["version"] == SCHEDULE_CONFIG_VERSION
     assert isinstance(config["schedules"], list)
+
+
+def test_default_tasks_include_lead_digest():
+    lead_task = next((task for task in DEFAULT_TASKS if task.key == "lead-digest"), None)
+
+    assert lead_task is not None
+    assert lead_task.action == "lead_digest"
+    assert lead_task.cadence == "daily"
+
+
+def test_default_tasks_include_demand_review():
+    task = next((task for task in DEFAULT_TASKS if task.key == "demand-review"), None)
+
+    assert task is not None
+    assert task.action == "demand_review"
+    assert task.cadence == "weekly"
+
+
+def test_default_tasks_include_nightly_demand_plan():
+    task = next((task for task in DEFAULT_TASKS if task.key == "nightly-demand-plan"), None)
+
+    assert task is not None
+    assert task.action == "nightly_demand_plan"
+    assert task.cadence == "daily"

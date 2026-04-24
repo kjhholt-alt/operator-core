@@ -24,6 +24,7 @@ from typing import Callable
 from dotenv import load_dotenv
 
 from .http_server import serve_http
+from .demand_routes import register_demand_routes
 from .metrics import register_metrics_route
 from .remote import register_remote_route
 from .runner import JobRunner
@@ -222,6 +223,7 @@ class Daemon:
             raise
 
         register_remote_route(self.store)
+        register_demand_routes()
         register_metrics_route(self.http, self.store)
         self._http_thread = threading.Thread(
             target=self.http.serve_forever,

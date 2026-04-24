@@ -56,6 +56,10 @@ DEFAULT_TASKS = [
         description="Daily marketing metrics + outreach pipeline report",
     ),
     ScheduledTask(
+        "lead-digest", "lead_digest", "06:45",
+        description="Signup-first lead queue sync + follow-up digest metrics",
+    ),
+    ScheduledTask(
         "ag-market-pulse", "deck_ag_market_pulse", "06:40",
         cadence="monthly", project="ag-market-pulse",
         description="Monthly ag market intel deck (PPTX + email)",
@@ -63,6 +67,14 @@ DEFAULT_TASKS = [
     ScheduledTask(
         "cost-report", "cost_report", "21:00", cadence="weekly",
         description="Weekly Claude / infra spend breakdown",
+    ),
+    ScheduledTask(
+        "nightly-demand-plan", "nightly_demand_plan", "21:05",
+        description="Nightly signup-first plan, experiment registry, and follow-up queue",
+    ),
+    ScheduledTask(
+        "demand-review", "demand_review", "21:15", cadence="weekly",
+        description="Weekly portfolio demand scoreboard + experiment backlog",
     ),
 ]
 

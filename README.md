@@ -20,6 +20,12 @@ pipx install operator-core
 operator init                    # creates ~/.operator/config.toml
 $EDITOR ~/.operator/config.toml  # set projects_root + add your projects
 operator run                     # starts the daemon
+operator leads report --window-hours 24
+operator leads sync              # pull signups/intakes into the follow-up queue
+operator leads list              # who needs attention next
+operator leads digest            # daily signup-first follow-up briefing
+operator tasks run lead-digest   # run the scheduled local digest job now
+operator demand scoreboard       # rank products by current demand signal
 ```
 
 ## What it does
@@ -31,6 +37,57 @@ operator run                     # starts the daemon
 - **Claude Code hooks** — pre/post tool-use guardrails, risk tiering, auto-merge gating
 - **PR factory** — spin up worktrees, run agents, open PRs, triage CI
 - **Observability** — `/ops` dashboard, Prometheus metrics, job ledger
+- **Lead ledger** - signup-first queue across products, with notes, statuses, and Discord digest
+
+## Signup-first lead ledger
+
+The Growth OS sprint starts with `operator leads`: one command surface for
+seeing every signup, intake, audit unlock, and subscriber event before asking
+anyone to pay.
+
+```bash
+operator leads report --window-hours 168
+operator leads sync --window-hours 168 --dry-run
+operator leads sync --window-hours 168
+operator leads list --min-score 70 --limit 20
+operator leads show lead_abc123
+operator leads draft lead_abc123
+operator leads mark lead_abc123 CONTACTED --note "Sent personal follow-up."
+operator leads note lead_abc123 "Asked what workflow hurts most."
+operator leads daily             # sync + write local status metrics
+operator leads digest --post-discord
+```
+
+## Portfolio Demand OS
+
+The Demand OS layer uses the lead ledger to decide what product and distribution
+experiment deserves attention next.
+
+```bash
+operator demand scoreboard
+operator demand health
+operator demand experiments --limit 10
+operator demand backlog --seed
+operator demand experiment ai-ops-consulting-1 start "Active sprint lane."
+operator demand journey lead_abc123
+operator demand nightly --write --write-status
+operator demand weekly --write --write-status
+operator tasks run nightly-demand-plan
+operator tasks run demand-review
+```
+
+The daemon also serves a local signup-first demand dashboard:
+
+```bash
+operator run --no-discord --no-scheduler --no-snapshot
+# open http://127.0.0.1:8765/demand
+```
+
+For the shared Supabase table, apply `docs/operator-leads-schema.sql`, then run:
+
+```bash
+operator leads sync --mirror-supabase
+```
 
 ## Config
 

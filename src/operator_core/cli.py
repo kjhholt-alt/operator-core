@@ -264,6 +264,26 @@ def _cmd_revenue(args: argparse.Namespace) -> int:
     return rev_mod.main(argv)
 
 
+def _cmd_leads(args: argparse.Namespace) -> int:
+    from . import lead_ledger
+
+    argv: list[str] = list(getattr(args, "leads_args", []) or [])
+    if not argv:
+        argv = [
+            f"--window-hours={args.window_hours}",
+            f"--limit={args.limit}",
+        ]
+        if args.post_discord:
+            argv.append("--post-discord")
+    return lead_ledger.main(argv)
+
+
+def _cmd_demand(args: argparse.Namespace) -> int:
+    from . import demand_os
+
+    return demand_os.main(list(getattr(args, "demand_args", []) or []))
+
+
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     from . import snapshot
 
@@ -336,7 +356,7 @@ def _cmd_tasks_run(args: argparse.Namespace) -> int:
     from .store import JobStore
 
     store = JobStore(s.db_path)
-    runner = JobRunner(store, settings=s)
+    runner = JobRunner(store)
 
     if kind == "builtin":
         action, prompt, project = t.action, t.prompt, t.project
@@ -787,6 +807,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_rev.add_argument("--post-discord", action="store_true", help="Also post to #claude-chat")
     p_rev.add_argument("--top", type=int, default=10, help="Top N cross-project actions to show")
     p_rev.set_defaults(func=_cmd_revenue)
+
+    # portfolio lead ledger (growth OS)
+    p_leads = sub.add_parser("leads", help="Signup/intake lead ledger across products")
+    p_leads.add_argument("--post-discord", action="store_true", help="Also post to #projects")
+    p_leads.add_argument("--window-hours", type=int, default=168, help="Lookback window in hours")
+    p_leads.add_argument("--limit", type=int, default=20, help="Max leads to show")
+    p_leads.add_argument("leads_args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    p_leads.set_defaults(func=_cmd_leads)
+
+    # portfolio demand OS
+    p_demand = sub.add_parser("demand", help="Demand scoreboard, experiments, and growth reviews")
+    p_demand.add_argument("demand_args", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    p_demand.set_defaults(func=_cmd_demand)
 
     # tasks
     p_tasks = sub.add_parser("tasks", help="List / run / enable / disable scheduled tasks")

@@ -12,6 +12,12 @@ Exposed metrics:
   operator_deploy_health{project="...",state="ok|warn|tripped"} gauge (1/0)
   operator_hook_blocks_total                  counter
   operator_cost_usd_today                     gauge
+  operator_leads_open                         gauge
+  operator_leads_high_intent_uncontacted      gauge
+  operator_leads_stale_high_intent            gauge
+  operator_demand_top_score                   gauge
+  operator_demand_running_experiments         gauge
+  operator_demand_watch_sources               gauge
 """
 from __future__ import annotations
 
@@ -170,6 +176,28 @@ def render_metrics(
     # operator_cost_usd_today
     lines.append("# TYPE operator_cost_usd_today gauge")
     lines.append(f"operator_cost_usd_today {cost_today:.4f}")
+
+    # lead ledger gauges
+    leads = status_data.get("lead_ledger") or {}
+    lines.append("# TYPE operator_leads_open gauge")
+    lines.append(f"operator_leads_open {int(leads.get('open_count') or 0)}")
+    lines.append("# TYPE operator_leads_high_intent_uncontacted gauge")
+    lines.append(
+        f"operator_leads_high_intent_uncontacted {int(leads.get('high_intent_uncontacted') or 0)}"
+    )
+    lines.append("# TYPE operator_leads_stale_high_intent gauge")
+    lines.append(f"operator_leads_stale_high_intent {int(leads.get('stale_high_intent') or 0)}")
+
+    demand = status_data.get("demand_os") or {}
+    nightly = status_data.get("nightly_demand_plan") or {}
+    lines.append("# TYPE operator_demand_top_score gauge")
+    lines.append(f"operator_demand_top_score {int(demand.get('top_score') or 0)}")
+    lines.append("# TYPE operator_demand_running_experiments gauge")
+    lines.append(
+        f"operator_demand_running_experiments {int(nightly.get('running_experiments') or 0)}"
+    )
+    lines.append("# TYPE operator_demand_watch_sources gauge")
+    lines.append(f"operator_demand_watch_sources {len(demand.get('watch_sources') or [])}")
 
     return "\n".join(lines) + "\n"
 

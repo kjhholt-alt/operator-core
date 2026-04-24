@@ -309,6 +309,12 @@ class JobRunner:
                 return self._run_script_job(job, "deploy-checker.py")
             if job.action == "marketing_pulse":
                 return self._run_script_job(job, "marketing-pulse.py", timeout=1800)
+            if job.action == "lead_digest":
+                return self._run_lead_digest(job)
+            if job.action == "demand_review":
+                return self._run_demand_review(job)
+            if job.action == "nightly_demand_plan":
+                return self._run_nightly_demand_plan(job)
             if job.action == "cost_report":
                 return self._run_script_job(job, "cost-tracker.py report")
             if job.action == "deck_ag_market_pulse":
@@ -383,6 +389,115 @@ class JobRunner:
                 "posted": result.get("posted"),
                 "projects_in_context": result.get("projects_in_context", 0),
                 "error": error,
+            },
+        )
+
+    def _run_lead_digest(self, job: JobRecord) -> JobRecord:
+        """Signup-first lead queue sync + local status metrics."""
+        from . import lead_ledger
+
+        try:
+            payload = lead_ledger.run_daily_digest(post_discord=False)
+        except Exception as exc:  # noqa: BLE001
+            return self.store.update_job(
+                job.id,
+                status="failed",
+                metadata={**job.metadata, "error": redact_secrets(str(exc))},
+            )
+        digest = payload.get("digest") or {}
+        sync = payload.get("sync") or {}
+        summary = (
+            f"open={digest.get('open_count', 0)} "
+            f"new_24h={len(digest.get('new_24h') or [])} "
+            f"high_intent={len(digest.get('high_intent_uncontacted') or [])} "
+            f"stale={len(digest.get('stale_high_intent') or [])}"
+        )
+        return self.store.update_job(
+            job.id,
+            status="complete",
+            metadata={
+                **job.metadata,
+                "summary": summary,
+                "sync": sync,
+                "lead_digest": {
+                    "open_count": digest.get("open_count", 0),
+                    "new_24h": len(digest.get("new_24h") or []),
+                    "high_intent_uncontacted": len(digest.get("high_intent_uncontacted") or []),
+                    "stale_high_intent": len(digest.get("stale_high_intent") or []),
+                    "counts_by_product": digest.get("counts_by_product") or {},
+                    "source_errors": digest.get("source_errors") or [],
+                },
+            },
+        )
+
+    def _run_demand_review(self, job: JobRecord) -> JobRecord:
+        """Weekly portfolio demand scoreboard + experiment backlog."""
+        from . import demand_os
+
+        try:
+            payload = demand_os.run_weekly_review(write_file=True)
+        except Exception as exc:  # noqa: BLE001
+            return self.store.update_job(
+                job.id,
+                status="failed",
+                metadata={**job.metadata, "error": redact_secrets(str(exc))},
+            )
+        review = payload.get("review") or {}
+        scoreboard = review.get("scoreboard") or []
+        top = scoreboard[0] if scoreboard else {}
+        summary = (
+            f"top={top.get('product', '-')} score={top.get('demand_score', 0)} "
+            f"experiments={len(review.get('experiments') or [])}"
+        )
+        return self.store.update_job(
+            job.id,
+            status="complete",
+            metadata={
+                **job.metadata,
+                "summary": summary,
+                "demand_review": {
+                    "path": payload.get("path"),
+                    "top_product": top.get("product"),
+                    "top_score": top.get("demand_score", 0),
+                    "watch_sources": len((payload.get("status") or {}).get("watch_sources") or []),
+                    "experiments": len(review.get("experiments") or []),
+                },
+            },
+        )
+
+    def _run_nightly_demand_plan(self, job: JobRecord) -> JobRecord:
+        """Nightly signup-first plan with persistent experiment registry."""
+        from . import demand_os
+
+        try:
+            payload = demand_os.run_nightly_plan(write_file=True)
+        except Exception as exc:  # noqa: BLE001
+            return self.store.update_job(
+                job.id,
+                status="failed",
+                metadata={**job.metadata, "error": redact_secrets(str(exc))},
+            )
+        plan = payload.get("plan") or {}
+        summary = (
+            f"focus={plan.get('focus_product') or '-'} "
+            f"running={len(plan.get('active_experiments') or [])} "
+            f"open_experiments={len(plan.get('backlog') or [])} "
+            f"top_leads={len(plan.get('top_leads') or [])}"
+        )
+        return self.store.update_job(
+            job.id,
+            status="complete",
+            metadata={
+                **job.metadata,
+                "summary": summary,
+                "nightly_demand_plan": {
+                    "path": payload.get("path"),
+                    "focus_product": plan.get("focus_product"),
+                    "running_experiments": len(plan.get("active_experiments") or []),
+                    "open_experiments": len(plan.get("backlog") or []),
+                    "watch_sources": len(plan.get("watch_sources") or []),
+                    "top_leads": len(plan.get("top_leads") or []),
+                },
             },
         )
 
