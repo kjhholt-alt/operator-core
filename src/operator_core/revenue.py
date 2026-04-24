@@ -521,10 +521,17 @@ def main(argv: list[str] | None = None) -> int:
         try:
             from .utils.discord import notify
             embed = render_discord(report, top_n=top_n)
+            # Build a richer body containing the actual top actions, not
+            # just the description (notify() doesn't pass through fields).
+            body_lines = [embed["description"], ""]
+            for fld in embed.get("fields", []):
+                body_lines.append(f"**{fld['name']}**")
+                body_lines.append(fld["value"])
+                body_lines.append("")
             ok = notify(
-                channel="claude_chat",
+                channel="projects",
                 title=embed["title"],
-                body=embed["description"],
+                body="\n".join(body_lines)[:3800],
                 color="indigo",
                 footer=embed["footer"]["text"],
             )

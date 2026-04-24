@@ -270,6 +270,70 @@ def _cost_series_7d(db_path: Path, now: datetime) -> list[dict[str, Any]]:
     return out
 
 
+def _repo_health(settings) -> dict[str, Any]:
+    """Per-project repo hygiene check — dirty trees + unpushed branches.
+
+    Lightweight: 2s subprocess timeout per project. Surfaces problems
+    that revenue-critical work can't ignore (uncommitted code that needs
+    to ship, branches that won't deploy because they aren't pushed).
+
+    Returns:
+        dirty_repos_count, unpushed_branches_count plus per-project
+        breakdown so the watchdog and revenue cockpit can drill in.
+    """
+    dirty_repos: list[dict[str, Any]] = []
+    unpushed: list[dict[str, Any]] = []
+
+    for p in settings.projects:
+        proj_path = Path(p.path)
+        if not (proj_path / ".git").exists():
+            continue
+
+        # Dirty working tree
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(proj_path), "status", "--porcelain"],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                n = len(r.stdout.strip().splitlines())
+                dirty_repos.append({"slug": p.slug, "dirty_files": n})
+        except Exception:
+            pass
+
+        # Unpushed commits on current branch
+        try:
+            br = subprocess.run(
+                ["git", "-C", str(proj_path), "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=2, check=False,
+            )
+            branch = br.stdout.strip() if br.returncode == 0 else ""
+            if branch and branch != "HEAD":
+                ah = subprocess.run(
+                    ["git", "-C", str(proj_path), "rev-list", "--count",
+                     f"origin/{branch}..HEAD"],
+                    capture_output=True, text=True, timeout=2, check=False,
+                )
+                if ah.returncode == 0:
+                    try:
+                        ahead_n = int(ah.stdout.strip() or "0")
+                        if ahead_n > 0:
+                            unpushed.append({
+                                "slug": p.slug, "branch": branch, "ahead": ahead_n,
+                            })
+                    except ValueError:
+                        pass
+        except Exception:
+            pass
+
+    return {
+        "dirty_repos_count": len(dirty_repos),
+        "unpushed_branches_count": len(unpushed),
+        "dirty_repos": dirty_repos,
+        "unpushed_branches": unpushed,
+    }
+
+
 def _git_activity(settings, now: datetime) -> list[dict[str, Any]]:
     """Per-project git heartbeat: commits in last 7 days + last commit age.
 
@@ -486,6 +550,7 @@ def build_snapshot(
     revenue_7d = _revenue_7d(settings)
     mrr_7d_usd = round(sum(float(r.get("mrr_usd") or 0) for r in revenue_7d), 2)
     replies = _replies_summary(settings)
+    repo_health = _repo_health(settings)
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -501,7 +566,10 @@ def build_snapshot(
             "mrr_7d_usd": mrr_7d_usd,
             "replies_unread": replies["unread"],
             "replies_sent_7d": replies["sent_7d"],
+            "dirty_repos_count": repo_health["dirty_repos_count"],
+            "unpushed_branches_count": repo_health["unpushed_branches_count"],
         },
+        "repo_health": repo_health,
         "watchdog": _watchdog_panel(status, watchdog_cfg, now),
         "jobs": _format_jobs(jobs, now),
         "deploy_health": _deploy_health(status, settings),
