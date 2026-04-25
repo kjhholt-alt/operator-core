@@ -156,12 +156,57 @@ class ExperimentRecord:
 
 
 @dataclass(frozen=True)
+class BrokerCloseLead:
+    email: str
+    company: str | None
+    status: str
+    source_status: str | None
+    audit_lead_id: str | None
+    synced_lead_id: str | None
+    intent_score: int
+    recommended_workflow: str | None
+    urgency: str | None
+    estimated_hours_saved_per_week: Any
+    age_hours: float | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.__dict__.copy()
+
+
+@dataclass(frozen=True)
+class BrokerCloseState:
+    total: int
+    hot_unworked: int
+    stale_hot: int
+    contacted: int
+    booked: int
+    won: int
+    lost: int
+    nurture: int
+    top_actions: list[BrokerCloseLead]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "total": self.total,
+            "hot_unworked": self.hot_unworked,
+            "stale_hot": self.stale_hot,
+            "contacted": self.contacted,
+            "booked": self.booked,
+            "won": self.won,
+            "lost": self.lost,
+            "nurture": self.nurture,
+            "top_actions": [lead.to_dict() for lead in self.top_actions],
+        }
+
+
+@dataclass(frozen=True)
 class DemandReview:
     generated_at: str
     scoreboard: list[ProductDemand]
     source_health: list[SourceHealth]
     experiments: list[GrowthExperiment]
     top_leads: list[LeadRecord]
+    broker_close_state: BrokerCloseState
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -170,6 +215,7 @@ class DemandReview:
             "source_health": [row.to_dict() for row in self.source_health],
             "experiments": [row.to_dict() for row in self.experiments],
             "top_leads": [_lead_summary(lead) for lead in self.top_leads],
+            "broker_close_state": self.broker_close_state.to_dict(),
         }
 
 
@@ -182,6 +228,7 @@ class NightlyPlan:
     active_experiments: list[ExperimentRecord]
     backlog: list[ExperimentRecord]
     top_leads: list[LeadRecord]
+    broker_close_state: BrokerCloseState
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -192,6 +239,7 @@ class NightlyPlan:
             "active_experiments": [row.to_dict() for row in self.active_experiments],
             "backlog": [row.to_dict() for row in self.backlog],
             "top_leads": [_lead_summary(lead) for lead in self.top_leads],
+            "broker_close_state": self.broker_close_state.to_dict(),
         }
 
 
@@ -505,6 +553,58 @@ def build_experiments(
     return experiments[:limit]
 
 
+def build_broker_close_state(
+    store: LeadStore | None = None,
+    *,
+    now: datetime | None = None,
+) -> BrokerCloseState:
+    """Summarize the AI Ops broker lane from normalized ledger records.
+
+    Broker audit rows carry score/workflow context. Synced `ao_leads` rows carry
+    operator close status from the AI Ops admin room. This rollup merges both by
+    email so Demand OS can see close momentum without coupling to AI Ops UI code.
+    """
+    store = store or LeadStore()
+    now = now or datetime.now(timezone.utc)
+    records = [
+        record
+        for record in store.list(open_only=False, limit=10_000)
+        if _is_broker_close_record(record)
+    ]
+    by_key: dict[str, list[LeadRecord]] = {}
+    for record in records:
+        key = (record.email or record.source_row_id).lower()
+        by_key.setdefault(key, []).append(record)
+
+    leads = [_merge_broker_close_records(group, now=now) for group in by_key.values()]
+    leads.sort(key=_broker_close_priority, reverse=True)
+
+    return BrokerCloseState(
+        total=len(leads),
+        hot_unworked=len([lead for lead in leads if lead.status == "NEW" and lead.intent_score >= 80]),
+        stale_hot=len(
+            [
+                lead
+                for lead in leads
+                if lead.status == "NEW"
+                and lead.intent_score >= 80
+                and lead.age_hours is not None
+                and lead.age_hours >= 48
+            ]
+        ),
+        contacted=len([lead for lead in leads if lead.status == "CONTACTED"]),
+        booked=len([lead for lead in leads if lead.status == "BOOKED"]),
+        won=len([lead for lead in leads if lead.status == "WON"]),
+        lost=len([lead for lead in leads if lead.status == "LOST"]),
+        nurture=len([lead for lead in leads if lead.status == "NURTURE"]),
+        top_actions=[
+            lead
+            for lead in leads
+            if lead.status in {"NEW", "CONTACTED", "NURTURE"} and lead.intent_score >= 75
+        ][:5],
+    )
+
+
 def seed_experiment_backlog(
     store: LeadStore | None = None,
     experiment_store: ExperimentStore | None = None,
@@ -526,6 +626,7 @@ def build_review(store: LeadStore | None = None, *, now: datetime | None = None)
         source_health=build_source_health(store),
         experiments=build_experiments(store, now=now),
         top_leads=store.list(open_only=True, limit=10),
+        broker_close_state=build_broker_close_state(store, now=now),
     )
 
 
@@ -551,6 +652,7 @@ def build_nightly_plan(
         active_experiments=experiment_store.list(status="RUNNING", limit=8),
         backlog=experiment_store.list(include_done=False, limit=12),
         top_leads=store.list(open_only=True, limit=8),
+        broker_close_state=build_broker_close_state(store, now=now),
     )
 
 
@@ -675,6 +777,22 @@ def render_review(review: DemandReview) -> str:
     lines.extend(["", "## Source Health", ""])
     for row in review.source_health:
         lines.append(f"- `{row.health}` {row.product} / {row.event_type} / `{row.source_table}`: {row.note}")
+    broker = review.broker_close_state
+    lines.extend(["", "## AI Ops Broker Close State", ""])
+    lines.append(
+        f"- Total broker leads: {broker.total}; hot unworked: {broker.hot_unworked}; "
+        f"stale hot: {broker.stale_hot}; contacted: {broker.contacted}; "
+        f"booked: {broker.booked}; won: {broker.won}; lost: {broker.lost}; nurture: {broker.nurture}"
+    )
+    if broker.top_actions:
+        lines.append("- Top broker actions:")
+        for lead in broker.top_actions:
+            lines.append(
+                f"  - [{lead.intent_score}] {lead.company or lead.email} "
+                f"({lead.status}) - {lead.recommended_workflow or 'review workflow'}"
+            )
+    else:
+        lines.append("- No broker close actions in the local queue.")
     lines.extend(["", "## Experiment Backlog", ""])
     for row in review.experiments:
         lines.append(f"- [{row.priority}] **{row.product}** - {row.title}")
@@ -727,6 +845,17 @@ def render_nightly_plan(plan: NightlyPlan) -> str:
             f"- [{lead.intent_score}] **{lead.product}** {lead.event_type}: "
             f"{lead.company or lead.email or '-'} (`{lead.id}`)"
         )
+    broker = plan.broker_close_state
+    lines.extend(["", "## Broker Close State", ""])
+    lines.append(
+        f"- Total: {broker.total}; hot unworked: {broker.hot_unworked}; "
+        f"stale hot: {broker.stale_hot}; booked: {broker.booked}; won: {broker.won}"
+    )
+    for lead in broker.top_actions[:5]:
+        lines.append(
+            f"- [{lead.intent_score}] **{lead.status}** {lead.company or lead.email}: "
+            f"{lead.recommended_workflow or 'review workflow'}"
+        )
     lines.extend(["", "## Source Watch", ""])
     if not plan.watch_sources:
         lines.append("- No watch sources right now.")
@@ -769,6 +898,7 @@ def write_status_metrics(review: DemandReview, *, path: Path | None = None) -> d
             row.to_dict() for row in review.source_health if row.health == "watch"
         ],
         "top_experiments": [row.to_dict() for row in review.experiments[:5]],
+        "broker_close_state": review.broker_close_state.to_dict(),
     }
     status_mod.write_status("demand_os", payload, path)
     return payload
@@ -784,6 +914,7 @@ def write_nightly_status(plan: NightlyPlan, *, path: Path | None = None) -> dict
         "open_experiments": len(plan.backlog),
         "watch_sources": [row.to_dict() for row in plan.watch_sources[:8]],
         "top_leads": [_lead_summary(lead) for lead in plan.top_leads[:5]],
+        "broker_close_state": plan.broker_close_state.to_dict(),
     }
     status_mod.write_status("nightly_demand_plan", payload, path)
     return payload
@@ -839,6 +970,74 @@ def _record_age_hours(record: LeadRecord, now: datetime) -> float | None:
     if ts is None:
         return None
     return max(0.0, (now - ts).total_seconds() / 3600)
+
+
+def _is_broker_close_record(record: LeadRecord) -> bool:
+    if record.product != "AI Ops Consulting":
+        return False
+    return (
+        record.event_type == "broker_workflow_audit"
+        or record.metadata.get("source") == "broker_workflow_audit"
+    )
+
+
+def _merge_broker_close_records(records: list[LeadRecord], *, now: datetime) -> BrokerCloseLead:
+    audit_record = next((r for r in records if r.event_type == "broker_workflow_audit"), None)
+    lead_record = next((r for r in records if r.metadata.get("source") == "broker_workflow_audit"), None)
+    primary = audit_record or lead_record or records[0]
+    status_source = lead_record or primary
+    metadata = audit_record.metadata if audit_record else primary.metadata
+    return BrokerCloseLead(
+        email=primary.email or "",
+        company=primary.company or (lead_record.company if lead_record else None),
+        status=_broker_close_status(status_source),
+        source_status=_raw_broker_status(status_source),
+        audit_lead_id=audit_record.id if audit_record else None,
+        synced_lead_id=lead_record.id if lead_record else None,
+        intent_score=max(record.intent_score for record in records),
+        recommended_workflow=_metadata_str(metadata.get("recommended_workflow")),
+        urgency=_metadata_str(metadata.get("urgency")),
+        estimated_hours_saved_per_week=metadata.get("estimated_hours_saved_per_week"),
+        age_hours=_record_age_hours(primary, now),
+    )
+
+
+def _broker_close_status(record: LeadRecord) -> str:
+    raw = _raw_broker_status(record) or record.status
+    normalized = raw.strip().upper().replace("-", "_")
+    if normalized in {"NEW", "CONTACTED", "BOOKED", "WON", "LOST", "NURTURE"}:
+        return normalized
+    if normalized in {"REPLIED", "FOLLOW_UP"}:
+        return "CONTACTED"
+    if normalized in {"CLOSED"}:
+        return "WON"
+    return "NEW"
+
+
+def _raw_broker_status(record: LeadRecord) -> str | None:
+    value = record.metadata.get("status")
+    if value is None:
+        return None
+    return str(value)
+
+
+def _broker_close_priority(lead: BrokerCloseLead) -> tuple[int, int, float]:
+    status_weight = {
+        "NEW": 5,
+        "CONTACTED": 4,
+        "NURTURE": 3,
+        "BOOKED": 2,
+        "WON": 1,
+        "LOST": 0,
+    }.get(lead.status, 0)
+    urgency_weight = 2 if lead.urgency == "this-week" else 1 if lead.urgency == "this-month" else 0
+    return (status_weight + urgency_weight, lead.intent_score, lead.age_hours or 0)
+
+
+def _metadata_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _parse_time(value: str | None) -> datetime | None:

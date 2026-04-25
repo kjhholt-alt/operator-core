@@ -49,6 +49,7 @@ def render_demand_page(plan: dict[str, Any]) -> str:
     backlog = list(plan.get("backlog") or [])
     leads = list(plan.get("top_leads") or [])
     watch = list(plan.get("watch_sources") or [])
+    broker = dict(plan.get("broker_close_state") or {})
     focus = plan.get("focus_product") or "-"
     generated = plan.get("generated_at") or "-"
     top_score = scoreboard[0].get("demand_score") if scoreboard else 0
@@ -106,6 +107,20 @@ def render_demand_page(plan: dict[str, Any]) -> str:
       <table>
         <thead><tr><th>Score</th><th>Status</th><th>Product</th><th>Who</th><th>Event</th></tr></thead>
         <tbody>{_lead_rows(leads)}</tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><span>AI Ops Broker Close State</span><small>manual sales lane</small></div>
+      <div class="kpis broker-kpis">
+        {_stat("hot unworked", broker.get("hot_unworked", 0))}
+        {_stat("stale hot", broker.get("stale_hot", 0))}
+        {_stat("booked", broker.get("booked", 0))}
+        {_stat("won", broker.get("won", 0))}
+      </div>
+      <table>
+        <thead><tr><th>Status</th><th>Score</th><th>Broker</th><th>Workflow</th></tr></thead>
+        <tbody>{_broker_rows(list(broker.get("top_actions") or []))}</tbody>
       </table>
     </section>
 
@@ -204,6 +219,23 @@ def _lead_rows(rows: list[dict[str, Any]]) -> str:
     return "\n".join(out)
 
 
+def _broker_rows(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return _empty_row(4, "no broker close actions")
+    out = []
+    for row in rows:
+        who = row.get("company") or row.get("email") or "-"
+        out.append(
+            "<tr>"
+            f"<td class=\"mono\">{_esc(row.get('status'))}</td>"
+            f"<td class=\"mono strong\">{_esc(row.get('intent_score'))}</td>"
+            f"<td>{_esc(who)}</td>"
+            f"<td>{_esc(row.get('recommended_workflow'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(out)
+
+
 def _experiment_rows(rows: list[dict[str, Any]]) -> str:
     if not rows:
         return _empty_row(4, "no experiments")
@@ -294,6 +326,7 @@ h1 { margin: 6px 0 4px; font-size: 34px; line-height: 1.05; letter-spacing: 0; }
 p { margin: 0; color: var(--muted); }
 .summary { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(420px, 620px); gap: 18px; padding: 22px 0; align-items: end; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.broker-kpis { padding: 12px; }
 .stat, .panel { background: var(--surface); border: 1px solid var(--border); }
 .stat { padding: 12px; min-height: 72px; }
 .stat-value { font-size: 24px; font-weight: 700; }

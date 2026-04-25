@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from operator_core.demand_os import (
     ExperimentStore,
+    build_broker_close_state,
     build_experiments,
     build_nightly_plan,
     build_review,
@@ -119,6 +120,68 @@ def test_experiments_include_next_step(tmp_path):
     assert experiments
     assert any(exp.product == "AI Ops Consulting" for exp in experiments)
     assert all(exp.next_step for exp in experiments)
+
+
+def test_broker_close_state_merges_audit_context_with_lead_status(tmp_path):
+    store = LeadStore(tmp_path / "leads.sqlite3")
+    audit_spec = SourceSpec(
+        product="AI Ops Consulting",
+        event_type="broker_workflow_audit",
+        table="ao_broker_workflow_audits",
+        select="id,email,business_name,score,estimated_hours_saved_per_week,recommended_workflow,urgency,created_at",
+        company_field="business_name",
+        base_intent=90,
+        next_action="Open broker audit.",
+    )
+    lead_spec = SourceSpec(
+        product="AI Ops Consulting",
+        event_type="intake",
+        table="ao_leads",
+        select="id,email,business_name,source,status,created_at",
+        company_field="business_name",
+        base_intent=75,
+        next_action="Review lead.",
+    )
+    audit = normalize_row(
+        audit_spec,
+        {
+            "id": "audit_1",
+            "email": "owner@brokerage.com",
+            "business_name": "Main Street Deals",
+            "score": 91,
+            "estimated_hours_saved_per_week": 19,
+            "recommended_workflow": "Buyer follow-up queue",
+            "urgency": "this-week",
+            "created_at": "2026-04-24T01:00:00+00:00",
+        },
+        now=datetime(2026, 4, 24, tzinfo=timezone.utc),
+    )
+    synced_lead = normalize_row(
+        lead_spec,
+        {
+            "id": "lead_1",
+            "email": "owner@brokerage.com",
+            "business_name": "Main Street Deals",
+            "source": "broker_workflow_audit",
+            "status": "booked",
+            "created_at": "2026-04-24T01:05:00+00:00",
+        },
+        now=datetime(2026, 4, 24, tzinfo=timezone.utc),
+    )
+    store.upsert_event(audit)
+    store.upsert_event(synced_lead)
+
+    state = build_broker_close_state(store, now=datetime(2026, 4, 24, 2, tzinfo=timezone.utc))
+    review = build_review(store, now=datetime(2026, 4, 24, 2, tzinfo=timezone.utc))
+    text = render_review(review)
+
+    assert state.total == 1
+    assert state.booked == 1
+    assert state.hot_unworked == 0
+    assert state.top_actions == []
+    assert review.to_dict()["broker_close_state"]["booked"] == 1
+    assert "AI Ops Broker Close State" in text
+    assert "Buyer follow-up queue" not in text
 
 
 def test_journey_and_weekly_review_render(tmp_path):
