@@ -110,6 +110,38 @@ def test_ai_ops_waitlist_preserves_source_context():
     assert event.metadata["utm_campaign"] == "ops"
 
 
+def test_prospector_pro_sources_match_product_capture_paths():
+    waitlist_spec = next(item for item in SOURCE_SPECS if item.table == "pp_waitlist")
+    intake_spec = next(item for item in SOURCE_SPECS if item.table == "pp_intake")
+    saved_lead_spec = next(item for item in SOURCE_SPECS if item.table == "pp_leads")
+
+    event = normalize_row(
+        intake_spec,
+        {
+            "id": "pp_i1",
+            "email": "growth@agency.com",
+            "company_name": "Growth Agency",
+            "contact_name": "Jordan",
+            "vertical_interest": "Dental Offices",
+            "cities_interest": "Austin TX",
+            "team_size": "2-5",
+            "current_process": "Google Maps plus spreadsheets",
+            "monthly_lead_volume": "50-200 / month",
+            "contacted": False,
+            "created_at": "2026-04-24T01:00:00+00:00",
+        },
+        now=datetime(2026, 4, 24, 2, tzinfo=timezone.utc),
+    )
+
+    assert waitlist_spec.event_type == "waitlist"
+    assert intake_spec.event_type == "intake"
+    assert intake_spec.table == "pp_intake"
+    assert saved_lead_spec.event_type == "saved_lead"
+    assert event.company == "Growth Agency"
+    assert event.metadata["vertical_interest"] == "Dental Offices"
+    assert event.metadata["current_process"] == "Google Maps plus spreadsheets"
+
+
 def test_render_text_includes_next_action():
     client = FakeClient(
         {

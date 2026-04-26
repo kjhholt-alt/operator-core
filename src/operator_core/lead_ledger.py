@@ -177,11 +177,23 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
     SourceSpec(
         product="Prospector Pro",
         event_type="intake",
+        table="pp_intake",
+        select=(
+            "id,email,company_name,contact_name,vertical_interest,cities_interest,"
+            "team_size,current_process,monthly_lead_volume,contacted,created_at"
+        ),
+        company_field="company_name",
+        base_intent=70,
+        next_action="Follow up personally; they submitted the qualified early-access intake form.",
+    ),
+    SourceSpec(
+        product="Prospector Pro",
+        event_type="saved_lead",
         table="pp_leads",
         select="id,email,business_name,status,created_at,source",
         company_field="business_name",
-        base_intent=65,
-        next_action="Review saved lead/use case and qualify for early access.",
+        base_intent=45,
+        next_action="Review saved lead/use case if Prospector Pro usage becomes the active lane.",
     ),
     SourceSpec(
         product="AI Ops Consulting",

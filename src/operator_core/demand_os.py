@@ -34,6 +34,14 @@ SOURCE_HEALTH_HINTS = {
         "next check is traffic/signup volume, not table discovery. When rows arrive, "
         "Operator Core keeps source, page_path, and utm_campaign context."
     ),
+    ("Prospector Pro", "pp_waitlist"): (
+        "No rows in local ledger yet. Capture route exists via Prospector Pro `/api/waitlist`; "
+        "next check is traffic, lock-card CTA visibility, and early-access copy."
+    ),
+    ("Prospector Pro", "pp_intake"): (
+        "No rows in local ledger yet. Capture route exists via Prospector Pro `/api/intake`; "
+        "this is the qualified early-access form, distinct from saved lead rows in `pp_leads`."
+    ),
 }
 
 
