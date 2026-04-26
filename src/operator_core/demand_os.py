@@ -28,6 +28,14 @@ ACTIVE_PRODUCTS = (
     "PC Bottleneck Analyzer",
 )
 
+SOURCE_HEALTH_HINTS = {
+    ("AI Ops Consulting", "ao_waitlist"): (
+        "No rows in local ledger yet. Capture route exists via AI Ops `/api/waitlist`; "
+        "next check is traffic/signup volume, not table discovery. When rows arrive, "
+        "Operator Core keeps source, page_path, and utm_campaign context."
+    ),
+}
+
 
 PRODUCT_PROFILES: dict[str, dict[str, Any]] = {
     "DealBrain": {
@@ -496,7 +504,10 @@ def build_source_health(store: LeadStore | None = None) -> list[SourceHealth]:
             note = f"{count} normalized row(s) seen."
         elif spec.event_type in {"waitlist", "report_intake", "intake", "email_subscriber"}:
             health = "watch"
-            note = "No rows in local ledger yet; verify product route, source tags, and storage path."
+            note = SOURCE_HEALTH_HINTS.get(
+                (spec.product, spec.table),
+                "No rows in local ledger yet; verify product route, source tags, and storage path.",
+            )
         else:
             health = "optional"
             note = "No rows yet; this may be fine if the path is not active."

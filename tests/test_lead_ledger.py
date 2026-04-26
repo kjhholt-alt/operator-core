@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from operator_core.lead_ledger import (
     LeadStore,
     SourceSpec,
+    SOURCE_SPECS,
     build_digest_report,
     collect_events,
     draft_for_lead,
@@ -83,6 +84,30 @@ def test_collect_events_sorts_by_intent_score():
     assert report.events[0].event_type == "report_intake"
     assert report.events[0].intent_score > report.events[1].intent_score
     assert report.counts_by_product["DealBrain"] == 2
+
+
+def test_ai_ops_waitlist_preserves_source_context():
+    spec = next(item for item in SOURCE_SPECS if item.table == "ao_waitlist")
+    event = normalize_row(
+        spec,
+        {
+            "id": "ao_w1",
+            "email": "owner@example.com",
+            "business_name": "Ops Co",
+            "industry": "services",
+            "source": "landing_waitlist",
+            "page_path": "/?utm_campaign=ops",
+            "utm_campaign": "ops",
+            "created_at": "2026-04-24T01:00:00+00:00",
+        },
+        now=datetime(2026, 4, 24, 2, tzinfo=timezone.utc),
+    )
+
+    assert "source" in spec.select
+    assert event.source == "ao_waitlist"
+    assert event.metadata["source"] == "landing_waitlist"
+    assert event.metadata["page_path"] == "/?utm_campaign=ops"
+    assert event.metadata["utm_campaign"] == "ops"
 
 
 def test_render_text_includes_next_action():

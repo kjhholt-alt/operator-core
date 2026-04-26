@@ -97,8 +97,11 @@ def test_source_health_reports_seen_and_watch_paths(tmp_path):
 
     db_report = next(row for row in rows if row.source_table == "db_reports")
     db_waitlist = next(row for row in rows if row.source_table == "db_waitlist")
+    ao_waitlist = next(row for row in rows if row.source_table == "ao_waitlist")
     assert db_report.health == "ok"
     assert db_waitlist.health == "watch"
+    assert "Capture route exists" in ao_waitlist.note
+    assert "utm_campaign" in ao_waitlist.note
 
 
 def test_experiments_include_next_step(tmp_path):
