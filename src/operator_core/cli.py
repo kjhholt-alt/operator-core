@@ -494,6 +494,46 @@ def _cmd_gate_review_summary(args: argparse.Namespace) -> int:
     return 0 if all(s.pending == 0 for s in summaries) else 1
 
 
+def _cmd_outreach_suppression_pr(args: argparse.Namespace) -> int:
+    """Build (and optionally open) a network_scrub PR from approved_gate items."""
+    from . import suppression_pr
+
+    settings = _try_load_settings()
+    projects_root = _resolve_projects_root(settings)
+    if args.scrub_yml is None:
+        scrub_yml = projects_root / "outreach-common" / "config" / "network_scrub.yml"
+    else:
+        scrub_yml = Path(args.scrub_yml)
+
+    plan = suppression_pr.build_plan(scrub_yml)
+    if plan is None:
+        print("Nothing to suppress: no approved_gate would_block_new items in queue.")
+        return 0
+
+    print(f"Plan: add {len(plan.new_business_names)} business name(s) to {scrub_yml}")
+    for name in plan.new_business_names:
+        print(f"  + {name}")
+    print(f"Branch: {plan.branch_name}")
+
+    open_pr = args.open_pr or args.mark_suppressed
+    if not open_pr:
+        print("\n--- yml diff (apply manually or rerun with --open-pr) ---")
+        print(plan.yml_content[:1200] + ("..." if len(plan.yml_content) > 1200 else ""))
+        return 0
+
+    result = suppression_pr.open_pr(plan)
+    if result.get("error"):
+        print(f"PR open failed: {result.get('message') or result.get('body','')[:200]}")
+        return 1
+    pr_url = result.get("html_url", "(no url returned)")
+    print(f"PR opened: {pr_url}")
+
+    if args.mark_suppressed:
+        n = suppression_pr.mark_items_suppressed(plan.items)
+        print(f"Marked {n} queue item(s) as 'suppressed'.")
+    return 0
+
+
 def _cmd_outreach_audit_dashboard(args: argparse.Namespace) -> int:
     """Render the cut-over audit dashboard as a single static HTML file."""
     from . import outreach_audit, outreach_audit_html
@@ -1210,6 +1250,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_review_summary.add_argument("--json", action="store_true")
     p_review_summary.set_defaults(func=_cmd_gate_review_summary)
+
+    p_supp = outreach_sub.add_parser(
+        "suppression-pr",
+        help="Build (and optionally open) a network_scrub PR from approved_gate review items",
+    )
+    p_supp.add_argument(
+        "--scrub-yml",
+        type=Path,
+        default=None,
+        help="Path to outreach-common config/network_scrub.yml. "
+             "Default: ../outreach-common/config/network_scrub.yml relative to projects_dir.",
+    )
+    p_supp.add_argument(
+        "--open-pr",
+        action="store_true",
+        help="Push branch + open PR via GitHub REST. Requires GITHUB_TOKEN.",
+    )
+    p_supp.add_argument(
+        "--mark-suppressed",
+        action="store_true",
+        help="After successful PR open, flip queue items to 'suppressed'. Implies --open-pr.",
+    )
+    p_supp.set_defaults(func=_cmd_outreach_suppression_pr)
 
     # sprint
     p_sprint = sub.add_parser(
