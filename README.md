@@ -49,6 +49,11 @@ transparently delegates to the canonical packages. You get:
   shim provides the same surface so nothing breaks. Use
   `operator_core._vendor.events_ndjson.using_real_lib()` (and the
   status-spec twin) to check at runtime.
+- **Cross-portfolio roll-up** — `operator status portfolio` walks
+  `projects_root` for any sibling repo's `status-spec/v1` document
+  (`./status-spec.json`, `.status/`, `data/`, `docs/`) and prints a
+  worst-of-N health view. Exit code 0 on green, 1 on yellow/red, so
+  it slots cleanly into a cron or a launchd item.
 
 ## Get started
 
