@@ -95,6 +95,18 @@ recipes:
     cron: "*/30 * * * *"
     enabled: true
     notes: alert if a recently-promoted product regresses (read-only safety net)
+  - name: auto_merge_labeled
+    cron: "*/15 * * * *"
+    enabled: true
+    notes: merge any green PR carrying the `auto-merge` label on watched repos (opt-in via env)
+  - name: sender_gate_digest
+    cron: "45 6 * * *"
+    enabled: true
+    notes: daily Sender Gate roll-up to #automations (always-on)
+  - name: reply_classifier_sweep
+    cron: "*/15 * * * *"
+    enabled: true
+    notes: auto-close obvious opt-out / hard bounce / OOO replies (always-on)
   - name: outreach_pulse
     cron: "30 6 * * *"
     enabled: true
