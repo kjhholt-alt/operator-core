@@ -1,16 +1,21 @@
-"""Vendored stub of events-ndjson v1 Writer.
+"""events-ndjson shim.
 
-This is a minimal, dependency-free implementation of just enough of the
-events-ndjson v1 spec to emit cost-stream events from operator-core. We
-vendor it instead of taking a hard dependency because:
+Imports the real ``events_ndjson`` package when installed and re-exports
+its public surface. Falls back to a minimal local implementation for
+environments where the real lib is not yet on the system (fresh clones,
+CI without the optional ``specs`` extra, downstream packagers).
 
-1. The library is brand-new and not yet on PyPI.
-2. operator-core needs to ship without a network install step.
+Operator-core only needs three things:
 
-Once events-ndjson is published we replace this file with
-`from events_ndjson import Writer`.
+1. ``Writer`` — strict, schema-validated, used by ``cost_events.py``
+2. ``EventsNdjsonError`` — base exception for caller error handling
+3. ``append_event`` / ``read_events`` — file-per-stream helpers used by
+   the recipes runtime (``runs`` + ``cost`` streams). These are operator-
+   core-specific conveniences; the real lib does not provide them.
 
-Spec: https://github.com/kjhholt-alt/events-ndjson
+The fallback path matches the real lib's surface for ``Writer`` /
+``EventsNdjsonError`` (so ``cost_events`` works either way) and supplies
+``append_event`` / ``read_events`` regardless of which path is active.
 """
 
 from __future__ import annotations
@@ -24,133 +29,135 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-SCHEMA_VERSION = "events-ndjson/v1"
-_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
-_COST_REQUIRED = ("agent", "cost_usd")
+# ---------------------------------------------------------------------------
+# Real-package preference
+# ---------------------------------------------------------------------------
+_USING_REAL_LIB = False
+try:
+    from events_ndjson import Writer  # type: ignore  # noqa: F401
+    from events_ndjson.types import EventsNdjsonError  # type: ignore  # noqa: F401
+    SCHEMA_VERSION = "events-ndjson/v1"
+    _USING_REAL_LIB = True
+except ImportError:
+    # ----- fallback Writer + error type ------------------------------------
+    SCHEMA_VERSION = "events-ndjson/v1"
+    _TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+    _COST_REQUIRED = ("agent", "cost_usd")
 
+    class EventsNdjsonError(Exception):
+        """Base class for fallback shim errors."""
 
-class EventsNdjsonError(Exception):
-    """Base class for vendored stub errors."""
+    def _utc_ts() -> str:
+        now = datetime.now(timezone.utc)
+        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
+    def _validate_cost_payload(payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict):
+            raise EventsNdjsonError("payload must be a dict")
+        for k in _COST_REQUIRED:
+            if k not in payload:
+                raise EventsNdjsonError(f"cost payload missing required field: {k}")
+        if not isinstance(payload["agent"], str) or not payload["agent"]:
+            raise EventsNdjsonError("agent must be a non-empty string")
+        cost = payload["cost_usd"]
+        if not isinstance(cost, (int, float)) or cost < 0:
+            raise EventsNdjsonError("cost_usd must be a non-negative number")
 
-def _utc_ts() -> str:
-    now = datetime.now(timezone.utc)
-    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    class Writer:  # type: ignore[no-redef]
+        """Minimal cost-stream writer with atomic line append (fallback)."""
 
+        def __init__(
+            self,
+            stream: str,
+            source: str,
+            path: Union[str, Path],
+            *,
+            ensure_dir: bool = True,
+        ) -> None:
+            if stream != "cost":
+                raise EventsNdjsonError(
+                    f"fallback shim only supports stream='cost', got {stream!r}. "
+                    "Install the real `events-ndjson` package for full stream support."
+                )
+            self.stream = stream
+            self.source = source
+            self.path = Path(path)
+            self._lock = threading.Lock()
+            self._fd: Optional[int] = None
+            if ensure_dir:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._open()
 
-def _validate_cost_payload(payload: Dict[str, Any]) -> None:
-    if not isinstance(payload, dict):
-        raise EventsNdjsonError("payload must be a dict")
-    for k in _COST_REQUIRED:
-        if k not in payload:
-            raise EventsNdjsonError(f"cost payload missing required field: {k}")
-    if not isinstance(payload["agent"], str) or not payload["agent"]:
-        raise EventsNdjsonError("agent must be a non-empty string")
-    cost = payload["cost_usd"]
-    if not isinstance(cost, (int, float)) or cost < 0:
-        raise EventsNdjsonError("cost_usd must be a non-negative number")
+        def _open(self) -> None:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+            if hasattr(os, "O_BINARY"):
+                flags |= os.O_BINARY
+            self._fd = os.open(str(self.path), flags, 0o644)
 
+        def append(
+            self,
+            event_type: str,
+            payload: Dict[str, Any],
+            *,
+            ts: Optional[str] = None,
+            correlation_id: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            _validate_cost_payload(payload)
+            envelope = {
+                "ts": ts or _utc_ts(),
+                "source": self.source,
+                "stream": self.stream,
+                "event_type": event_type,
+                "payload": payload,
+                "correlation_id": correlation_id or str(uuid.uuid4()),
+                "schema_version": SCHEMA_VERSION,
+            }
+            if not _TS_RE.match(envelope["ts"]):
+                raise EventsNdjsonError("ts must be UTC ISO 8601 with millisecond precision")
+            line = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")) + "\n"
+            data = line.encode("utf-8")
+            with self._lock:
+                if self._fd is None:
+                    self._open()
+                assert self._fd is not None
+                written = os.write(self._fd, data)
+                while written < len(data):  # pragma: no cover
+                    written += os.write(self._fd, data[written:])
+            return envelope
 
-class Writer:
-    """Minimal cost-stream writer with atomic line append."""
+        def close(self) -> None:
+            with self._lock:
+                if self._fd is not None:
+                    try:
+                        os.close(self._fd)
+                    finally:
+                        self._fd = None
 
-    def __init__(
-        self,
-        stream: str,
-        source: str,
-        path: Union[str, Path],
-        *,
-        ensure_dir: bool = True,
-    ) -> None:
-        if stream != "cost":
-            # The vendored stub deliberately only knows the cost stream.
-            # Other streams should wait until we depend on the real lib.
-            raise EventsNdjsonError(
-                f"vendored stub only supports stream='cost', got {stream!r}"
-            )
-        self.stream = stream
-        self.source = source
-        self.path = Path(path)
-        self._lock = threading.Lock()
-        self._fd: Optional[int] = None
-        if ensure_dir:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._open()
+        def __enter__(self) -> "Writer":
+            return self
 
-    def _open(self) -> None:
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-        if hasattr(os, "O_BINARY"):
-            flags |= os.O_BINARY
-        self._fd = os.open(str(self.path), flags, 0o644)
-
-    def append(
-        self,
-        event_type: str,
-        payload: Dict[str, Any],
-        *,
-        ts: Optional[str] = None,
-        correlation_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        _validate_cost_payload(payload)
-        envelope = {
-            "ts": ts or _utc_ts(),
-            "source": self.source,
-            "stream": self.stream,
-            "event_type": event_type,
-            "payload": payload,
-            "correlation_id": correlation_id or str(uuid.uuid4()),
-            "schema_version": SCHEMA_VERSION,
-        }
-        if not _TS_RE.match(envelope["ts"]):
-            raise EventsNdjsonError("ts must be UTC ISO 8601 with millisecond precision")
-        line = json.dumps(envelope, ensure_ascii=False, separators=(",", ":")) + "\n"
-        data = line.encode("utf-8")
-        with self._lock:
-            if self._fd is None:
-                self._open()
-            assert self._fd is not None
-            written = os.write(self._fd, data)
-            while written < len(data):  # pragma: no cover - kernel guarantee
-                written += os.write(self._fd, data[written:])
-        return envelope
-
-    def close(self) -> None:
-        with self._lock:
-            if self._fd is not None:
-                try:
-                    os.close(self._fd)
-                finally:
-                    self._fd = None
-
-    def __enter__(self) -> "Writer":
-        return self
-
-    def __exit__(self, exc_type, exc, tb) -> None:
-        self.close()
-
-    def __del__(self) -> None:  # pragma: no cover - best effort
-        try:
+        def __exit__(self, exc_type, exc, tb) -> None:
             self.close()
-        except Exception:
-            pass
+
+        def __del__(self) -> None:  # pragma: no cover
+            try:
+                self.close()
+            except Exception:
+                pass
+
+
+def using_real_lib() -> bool:
+    """Diagnostic: True iff the real events-ndjson package is in use."""
+    return _USING_REAL_LIB
 
 
 # ---------------------------------------------------------------------------
-# Module-level helpers used by the recipes runtime.
+# Operator-core file-per-stream helpers (always present, both paths).
 #
-# These provide a simpler, file-per-stream NDJSON store rooted at
-# OPERATOR_EVENTS_DIR (default: ~/.operator/data). The runtime emits both
-# 'runs' and 'cost' stream events from a single recipe execution; the strict
-# cost-only Writer above is kept for the cost_events.py public API.
+# The recipes runtime emits both 'runs' and 'cost' stream events from a
+# single recipe execution. These helpers write to OPERATOR_EVENTS_DIR
+# without going through the strict cost-only Writer.
 # ---------------------------------------------------------------------------
-
-DEFAULT_EVENTS_DIR = Path(
-    os.environ.get(
-        "OPERATOR_EVENTS_DIR",
-        str(Path.home() / ".operator" / "data"),
-    )
-)
-
 
 def _events_dir() -> Path:
     return Path(
@@ -182,10 +189,8 @@ def append_event(
 ) -> Dict[str, Any]:
     """Append one event to <events_dir>/<stream>.ndjson.
 
-    This is the simple file-per-stream API the recipes runtime uses. It
-    deliberately accepts any stream name -- unlike the strict cost-only
-    ``Writer`` class -- because the runtime emits both 'runs' and 'cost'
-    events from one recipe execution.
+    Simple file-per-stream API. Accepts any stream name (unlike the
+    strict cost-only ``Writer``).
     """
     if not isinstance(stream, str) or not stream:
         raise EventsNdjsonError("stream must be a non-empty string")
@@ -211,10 +216,7 @@ def append_event(
 
 
 def read_events(stream: str) -> list[Dict[str, Any]]:
-    """Return all events written to ``<events_dir>/<stream>.ndjson``.
-
-    Returns an empty list if the file does not yet exist.
-    """
+    """Return all events written to ``<events_dir>/<stream>.ndjson``."""
     target = _stream_path(stream)
     if not target.exists():
         return []

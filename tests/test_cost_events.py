@@ -69,8 +69,11 @@ def test_writer_validates_payload(tmp_path):
 
 
 def test_writer_rejects_unsupported_stream(tmp_path):
+    # Use a name guaranteed not to be registered in either the fallback
+    # shim (only knows "cost") or the real events-ndjson registry (which
+    # ships cost / runs / agent_session / campaign / pacing).
     with pytest.raises(EventsNdjsonError):
-        Writer(stream="pacing", source="test", path=tmp_path / "x.ndjson")
+        Writer(stream="__no_such_stream__", source="test", path=tmp_path / "x.ndjson")
 
 
 def test_writer_atomic_under_threads(tmp_path):
