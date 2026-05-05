@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from operator_core.recipes import Recipe, RecipeContext, register_recipe
+from recipes._paths import projects_dir
 
 DEFAULT_THRESHOLD = 50.0  # USD/day
 
@@ -63,7 +64,7 @@ class AnthropicSpendAlarm(Recipe):
 
     def _sum_csv(self, today: str) -> float:
         path_str = os.environ.get("OPERATOR_COSTS_CSV") or str(
-            Path("C:/Users/Kruz/Desktop/Projects/operator-scripts/costs.csv")
+            projects_dir() / "operator-scripts" / "costs.csv"
         )
         path = Path(path_str)
         if not path.exists():

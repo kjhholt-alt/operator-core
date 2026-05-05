@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from operator_core.recipes import Recipe, RecipeContext, register_recipe
+from recipes._paths import project_subpath
 
-PL_ENGINE_DIR = Path("C:/Users/Kruz/Desktop/Projects/pl-engine")
+PL_ENGINE_DIR = project_subpath("pl-engine", env_var="PL_ENGINE_DIR")
 
 
 @register_recipe

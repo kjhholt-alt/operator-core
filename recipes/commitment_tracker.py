@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from operator_core.recipes import Recipe, RecipeContext, register_recipe
+from recipes._paths import project_subpath
 
-COMMITMENTS_PATH = Path("C:/Users/Kruz/Desktop/Projects/operator-scripts/commitments")
+COMMITMENTS_PATH = project_subpath("operator-scripts", "commitments",
+                                    env_var="OPERATOR_COMMITMENTS_PATH")
 
 
 @register_recipe

@@ -14,7 +14,9 @@ from typing import Any
 
 from operator_core.recipes import Recipe, RecipeContext, register_recipe
 
-PROJECTS_DIR = Path("C:/Users/Kruz/Desktop/Projects")
+from recipes._paths import projects_dir
+
+PROJECTS_DIR = projects_dir()
 SUSPECT_NAMES = re.compile(r"(\.env(\..+)?$|credentials\.json|service-account.*\.json|secrets?\.ya?ml)", re.IGNORECASE)
 
 

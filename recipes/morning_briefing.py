@@ -12,7 +12,9 @@ from typing import Any
 
 from operator_core.recipes import Recipe, RecipeContext, register_recipe
 
-PROJECTS_DIR = Path("C:/Users/Kruz/Desktop/Projects")
+from recipes._paths import projects_dir
+
+PROJECTS_DIR = projects_dir()
 
 
 @register_recipe
