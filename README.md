@@ -14,6 +14,37 @@ pip install operator-core
 pipx install operator-core
 ```
 
+### Optional extras
+
+| Extra      | Adds                                    | Why                                                                     |
+|------------|-----------------------------------------|-------------------------------------------------------------------------|
+| `discord`  | `discord.py>=2.3`                       | Slash bot + webhook posting                                             |
+| `status`   | `rich>=13.0`                            | Terminal status renderer                                                |
+| `specs`    | `status-spec>=1.0`, `events-ndjson>=0.1`| Canonical observability — see below                                     |
+| `dev`      | `pytest`, `pytest-asyncio`, `rich`      | Test suite + CLI niceties                                               |
+
+```bash
+pip install 'operator-core[specs,discord]'
+```
+
+### What `[specs]` gives you
+
+When `status-spec` and `events-ndjson` are installed, operator-core's
+internal vendor shim (`operator_core._vendor.{status_spec,events_ndjson}`)
+transparently delegates to the canonical packages. You get:
+
+- **Schema-validated event streams** — every `runs` and `cost` event the
+  recipes runtime emits is validated against the canonical
+  `events-ndjson/v1` JSON Schemas before being appended.
+- **Canonical status aggregate** — alongside the legacy
+  `~/.operator/data/status.json`, a `status-spec/v1`-conformant document
+  is emitted at `~/.operator/data/status-spec.json` with subsystems +
+  counters that any cross-portfolio dashboard can read.
+- **Backward compatibility** — without `[specs]`, an in-tree fallback
+  shim provides the same surface so nothing breaks. Use
+  `operator_core._vendor.events_ndjson.using_real_lib()` (and the
+  status-spec twin) to check at runtime.
+
 ## Get started
 
 ```bash
