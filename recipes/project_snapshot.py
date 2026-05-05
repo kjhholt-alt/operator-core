@@ -2,12 +2,34 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from operator_core.recipes import Recipe, RecipeContext, register_recipe
 
-PROJECTS_DIR = Path("C:/Users/Kruz/Desktop/Projects")
+
+def _projects_dir() -> Path:
+    # Prefer explicit env override, then settings-derived projects_root,
+    # then a sensible host-specific default.
+    override = os.environ.get("OPERATOR_PROJECTS_DIR")
+    if override:
+        return Path(override)
+    try:
+        from operator_core.paths import _projects_root
+        root = Path(str(_projects_root()))
+        if root.exists():
+            return root
+    except Exception:
+        pass
+    home = Path.home()
+    candidate = home / "Desktop" / "Projects"
+    if candidate.exists():
+        return candidate
+    return home
+
+
+PROJECTS_DIR = _projects_dir()
 
 
 @register_recipe

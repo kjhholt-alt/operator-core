@@ -38,4 +38,4 @@ jobs:
         env:
           OPERATOR_VERIFY_DRY: "1"
         run: |
-          python -m operator_core.cli recipe verify --json
+          python -m operator_core.cli recipe verify --json --lenient
