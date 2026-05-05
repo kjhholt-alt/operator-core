@@ -79,6 +79,10 @@ recipes:
     notes: status-spec component aggregator
 
   # --- outreach + revenue ----------------------------------------------------
+  - name: gate_audit_ingest
+    cron: "*/10 * * * *"
+    enabled: true
+    notes: sweep gate_audit ndjson into the SQLite review queue (Sender Gate cut-over)
   - name: outreach_pulse
     cron: "30 6 * * *"
     enabled: true

@@ -26,7 +26,8 @@ def register_recipe(cls: type[Recipe]) -> type[Recipe]:
     if not getattr(cls, "name", ""):
         raise ValueError(f"recipe {cls.__name__} has no name")
     if cls.name in _REGISTRY and _REGISTRY[cls.name] is not cls:
-        logger.warning("recipe.registry.overwrite", extra={"name": cls.name})
+        # `name` is a reserved LogRecord attribute -- use `recipe_name` instead.
+        logger.warning("recipe.registry.overwrite", extra={"recipe_name": cls.name})
     _REGISTRY[cls.name] = cls
     return cls
 

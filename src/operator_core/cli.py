@@ -1029,12 +1029,14 @@ def _schedule_path() -> Path:
 
 
 def _cmd_schedule_list(args: argparse.Namespace) -> int:
-    from .recipes.schedule import list_windows_tasks, load_schedule
+    from .recipes.schedule import detect_host, list_installed_tasks, load_schedule
+
+    host = getattr(args, "host", None) or detect_host()
 
     if args.installed:
-        names = list_windows_tasks()
+        names = list_installed_tasks(host=host)
         if not names:
-            print("no operator-recipe-* tasks registered")
+            print(f"no operator-recipe-* tasks registered ({host})")
             return 0
         for n in names:
             print(n)
@@ -1044,7 +1046,7 @@ def _cmd_schedule_list(args: argparse.Namespace) -> int:
     if not schedule.recipes:
         print(f"no recipes scheduled in {_schedule_path()}")
         return 0
-    print(f"{len(schedule.recipes)} scheduled recipes (v{schedule.version}):")
+    print(f"{len(schedule.recipes)} scheduled recipes (v{schedule.version}, host={host}):")
     for r in schedule.recipes:
         flag = "on" if r.enabled else "OFF"
         print(f"  [{flag}] {r.name:<30} {r.cron:<16} {r.notes}")
@@ -1052,13 +1054,14 @@ def _cmd_schedule_list(args: argparse.Namespace) -> int:
 
 
 def _cmd_schedule_install(args: argparse.Namespace) -> int:
-    from .recipes.schedule import install_windows_tasks, load_schedule
+    from .recipes.schedule import detect_host, install_tasks, load_schedule
 
+    host = getattr(args, "host", None) or detect_host()
     schedule = load_schedule(_schedule_path())
     if not schedule.recipes:
         print(f"no recipes scheduled in {_schedule_path()}", file=sys.stderr)
         return 1
-    plans = install_windows_tasks(schedule, dry_run=args.dry_run)
+    plans = install_tasks(schedule, host=host, dry_run=args.dry_run)
     failures = 0
     for plan in plans:
         if plan.get("error"):
@@ -1067,13 +1070,63 @@ def _cmd_schedule_install(args: argparse.Namespace) -> int:
         elif plan.get("skipped"):
             print(f"  SKIP {plan.get('recipe')}: {plan['skipped']}")
         elif plan.get("dry_run"):
-            print(f"  PLAN {plan.get('recipe')}: {' '.join(plan.get('argv', []))}")
+            label = plan.get("task") or plan.get("label") or plan.get("unit") or plan.get("recipe")
+            extra = " ".join(plan.get("argv", [])) if plan.get("argv") else plan.get("on_calendar", "")
+            print(f"  PLAN [{host}] {label}: {extra}")
         else:
             rc = plan.get("returncode")
-            print(f"  {'OK' if rc == 0 else 'FAIL'} {plan.get('recipe')} -> {plan.get('task')} (rc={rc})")
+            label = plan.get("task") or plan.get("label") or plan.get("unit")
+            print(f"  {'OK' if rc == 0 else 'FAIL'} {plan.get('recipe')} -> {label} (rc={rc})")
             if rc != 0:
                 failures += 1
     return 0 if failures == 0 else 1
+
+
+def _cmd_schedule_uninstall(args: argparse.Namespace) -> int:
+    from .recipes.schedule import detect_host, uninstall_tasks
+
+    host = getattr(args, "host", None) or detect_host()
+    plans = uninstall_tasks(host=host, dry_run=args.dry_run)
+    if not plans:
+        print(f"no operator-recipe-* tasks registered ({host})")
+        return 0
+    failures = 0
+    for plan in plans:
+        if plan.get("error"):
+            failures += 1
+            print(f"  FAIL {plan.get('task')}: {plan['error']}", file=sys.stderr)
+        elif plan.get("dry_run"):
+            print(f"  PLAN remove [{host}] {plan.get('task')}")
+        elif plan.get("removed"):
+            print(f"  OK removed {plan.get('task')}")
+        else:
+            rc = plan.get("returncode")
+            print(f"  {'OK' if rc == 0 else 'FAIL'} {plan.get('task')} (rc={rc})")
+            if rc != 0:
+                failures += 1
+    return 0 if failures == 0 else 1
+
+
+def _cmd_schedule_status(args: argparse.Namespace) -> int:
+    from .recipes.schedule import detect_host, load_schedule, status_report
+
+    host = getattr(args, "host", None) or detect_host()
+    schedule = load_schedule(_schedule_path())
+    if not schedule.recipes:
+        print(f"no recipes scheduled in {_schedule_path()}")
+        return 0
+    report = status_report(schedule, host=host)
+    rows = report["rows"]
+    installed_n = sum(1 for r in rows if r["installed"])
+    print(f"host={report['host']} prefix={report['prefix']} -- {installed_n}/{len(rows)} installed")
+    for r in rows:
+        marker = "OK" if r["installed"] else ("--" if not r["enabled"] else "MISSING")
+        print(f"  [{marker:>7}] {r['recipe']:<30} {r['cron']:<16} -> {r['task']}")
+    if report["orphans"]:
+        print("orphan tasks (registered but no recipe entry):")
+        for o in report["orphans"]:
+            print(f"  {o}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1419,20 +1472,37 @@ def build_parser() -> argparse.ArgumentParser:
     # schedule (replaces run-*.bat hell)
     p_schedule = sub.add_parser(
         "schedule",
-        help="Install / list cron-driven recipe tasks via Windows Task Scheduler",
+        help="Install / list / status / uninstall cron-driven recipe tasks (host-aware: schtasks / launchd / systemd-timer)",
     )
     schedule_sub = p_schedule.add_subparsers(dest="schedule_command", required=True)
 
     p_schedule_list = schedule_sub.add_parser("list", help="Show schedule.yaml entries")
-    p_schedule_list.add_argument("--installed", action="store_true", help="Show only currently registered Windows tasks")
+    p_schedule_list.add_argument("--installed", action="store_true", help="Show only currently registered host tasks")
+    p_schedule_list.add_argument("--host", choices=["windows", "macos", "linux"], default=None, help="Force a host scheduler family")
     p_schedule_list.set_defaults(func=_cmd_schedule_list)
 
     p_schedule_install = schedule_sub.add_parser(
         "install",
-        help="Register every enabled schedule.yaml entry as a Windows task",
+        help="Register every enabled schedule.yaml entry with the host scheduler",
     )
-    p_schedule_install.add_argument("--dry-run", action="store_true", help="Plan only; do not call schtasks")
+    p_schedule_install.add_argument("--dry-run", action="store_true", help="Plan only; do not call host scheduler")
+    p_schedule_install.add_argument("--host", choices=["windows", "macos", "linux"], default=None, help="Force a host scheduler family")
     p_schedule_install.set_defaults(func=_cmd_schedule_install)
+
+    p_schedule_uninstall = schedule_sub.add_parser(
+        "uninstall",
+        help="Remove every operator-recipe-* task from the host scheduler",
+    )
+    p_schedule_uninstall.add_argument("--dry-run", action="store_true", help="Plan only; do not call host scheduler")
+    p_schedule_uninstall.add_argument("--host", choices=["windows", "macos", "linux"], default=None, help="Force a host scheduler family")
+    p_schedule_uninstall.set_defaults(func=_cmd_schedule_uninstall)
+
+    p_schedule_status = schedule_sub.add_parser(
+        "status",
+        help="Compare schedule.yaml vs registered host tasks (drift report)",
+    )
+    p_schedule_status.add_argument("--host", choices=["windows", "macos", "linux"], default=None, help="Force a host scheduler family")
+    p_schedule_status.set_defaults(func=_cmd_schedule_status)
 
     # version
     p_version = sub.add_parser("version", help="Print version")
