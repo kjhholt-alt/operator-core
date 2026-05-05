@@ -396,6 +396,40 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return status_tui.render(once=args.once, json_mode=args.json)
 
 
+def _cmd_status_portfolio(args: argparse.Namespace) -> int:
+    """Read status-spec/v1 docs across sibling repos and render a roll-up."""
+    from . import portfolio_status
+
+    settings = _try_load_settings()
+    # Prefer explicit env override, then settings, then $HOME/Desktop/Projects, then cwd.
+    override = os.environ.get("OPERATOR_PROJECTS_DIR")
+    if override:
+        projects_root = Path(override)
+    elif settings and getattr(settings, "projects_root", None):
+        projects_root = Path(settings.projects_root)
+    else:
+        for cand in (Path.home() / "Desktop" / "Projects", Path.home() / "Projects"):
+            if cand.is_dir():
+                projects_root = cand
+                break
+        else:
+            projects_root = Path.cwd()
+    data_dir = _resolve_data_dir(settings)
+    extra = data_dir / "status-spec.json"
+    statuses = portfolio_status.collect(
+        projects_root=projects_root,
+        extra_path=extra if extra.exists() else None,
+    )
+    out = (
+        portfolio_status.render_json(statuses)
+        if getattr(args, "json", False)
+        else portfolio_status.render_table(statuses)
+    )
+    print(out, end="")
+    overall = portfolio_status.overall_health(statuses)
+    return 0 if overall in ("green", "unknown") else 1
+
+
 # ---------------------------------------------------------------------------
 # sprint + handoff
 # ---------------------------------------------------------------------------
@@ -962,9 +996,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # status
     p_status = sub.add_parser("status", help="Terminal dashboard (daemon + tasks + snapshot)")
+    status_sub = p_status.add_subparsers(dest="status_command")
     p_status.add_argument("--once", action="store_true", help="Print once and exit (no live refresh)")
     p_status.add_argument("--json", action="store_true", help="Emit JSON instead of a rendered table")
     p_status.set_defaults(func=_cmd_status)
+
+    p_status_portfolio = status_sub.add_parser(
+        "portfolio",
+        help="Roll up status-spec/v1 docs across sibling repos in projects_root",
+    )
+    p_status_portfolio.add_argument("--json", action="store_true", help="Emit JSON")
+    p_status_portfolio.set_defaults(func=_cmd_status_portfolio)
 
     # sprint
     p_sprint = sub.add_parser(
