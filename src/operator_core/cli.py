@@ -404,7 +404,7 @@ def _cmd_outreach_audit_report(args: argparse.Namespace) -> int:
     if not paths:
         paths = outreach_audit.default_audit_paths()
     since = outreach_audit._parse_since(args.since)
-    summaries = outreach_audit.collect(paths, since=since)
+    summaries = outreach_audit.collect(paths, since=since)  # uses default review db
     out = (
         outreach_audit.render_json(summaries, args.threshold)
         if getattr(args, "json", False)

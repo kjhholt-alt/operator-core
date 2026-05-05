@@ -177,3 +177,68 @@ def test_parse_since_iso_8601():
 
 def test_parse_since_none_returns_none():
     assert outreach_audit._parse_since(None) is None
+
+
+# -- triage integration --
+
+
+def test_cutover_ready_requires_fully_triaged(tmp_path):
+    """A would_block_new disagreement leaves a row in the queue. Until
+    that row is resolved, cut-over is NOT ready -- even with 100% match."""
+    from operator_core import gate_review
+
+    audit_path = tmp_path / "g.ndjson"
+    db_path = tmp_path / "review.sqlite"
+    # 100 match + 1 would_block_new -> match% = 99% > threshold
+    events = [_ev("oe", "match") for _ in range(99)] + [
+        _ev("oe", "would_block_new", lead_business_name="Acme")
+    ]
+    _write(audit_path, events)
+    # Seed the queue with that one disagreement (still pending).
+    gate_review.ingest_events(events, db_path=db_path)
+
+    out = outreach_audit.collect([audit_path], triage_db_path=db_path)
+    s = out[0]
+    assert s.match_pct >= 95.0
+    assert s.would_allow_new == 0
+    assert s.triage_pending == 1
+    assert s.cutover_ready() is False  # blocked by pending review
+
+    # Now resolve the queue item.
+    item = gate_review.list_pending("oe", db_path=db_path)[0]
+    gate_review.resolve(item.id, "approved_gate", db_path=db_path)
+    out2 = outreach_audit.collect([audit_path], triage_db_path=db_path)
+    assert out2[0].cutover_ready() is True
+    assert out2[0].triaged_pct == 100.0
+
+
+def test_cutover_ready_no_disagreements_no_queue_rows(tmp_path):
+    """Pure happy-path: 100% match, never any disagreements queued."""
+    audit_path = tmp_path / "g.ndjson"
+    db_path = tmp_path / "review.sqlite"
+    _write(audit_path, [_ev("oe", "match") for _ in range(20)])
+    out = outreach_audit.collect([audit_path], triage_db_path=db_path)
+    s = out[0]
+    assert s.triage_total == 0
+    assert s.triaged_pct == 100.0  # vacuously
+    assert s.cutover_ready() is True
+
+
+def test_render_table_includes_triage_column(tmp_path):
+    audit_path = tmp_path / "g.ndjson"
+    _write(audit_path, [_ev("oe", "match")])
+    out = outreach_audit.collect([audit_path], include_triage=False)
+    rendered = outreach_audit.render_table(out, threshold=95.0)
+    assert "TRIAGE%" in rendered
+    assert "triaged% == 100" in rendered
+
+
+def test_render_json_includes_triage_fields(tmp_path):
+    audit_path = tmp_path / "g.ndjson"
+    _write(audit_path, [_ev("oe", "match")])
+    out = outreach_audit.collect([audit_path], include_triage=False)
+    payload = json.loads(outreach_audit.render_json(out, threshold=95.0))
+    p = payload["products"][0]
+    assert "triage_total" in p
+    assert "triage_pending" in p
+    assert "triaged_pct" in p

@@ -57,6 +57,24 @@ def _product_card(s: outreach_audit.ProductSummary, threshold: float) -> str:
     badge_color = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" if ready \
         else "bg-rose-500/15 text-rose-300 border-rose-500/30"
     badge_text = "CUT-OVER READY" if ready else "NOT READY"
+    # Triage strip below the bars.
+    triage_html = ""
+    if s.triage_total > 0:
+        triage_color = "text-emerald-300" if s.fully_triaged else "text-amber-300"
+        triage_html = (
+            f'<div class="mt-3 text-xs flex items-center gap-2">'
+            f'<span class="text-zinc-500 uppercase tracking-wider">queue</span>'
+            f'<span class="text-zinc-300">{s.triage_triaged}/{s.triage_total} triaged</span>'
+            f'<span class="text-zinc-700">|</span>'
+            f'<span class="{triage_color}">{s.triage_pending} pending</span>'
+            f'</div>'
+        )
+    elif s.would_block_new + s.would_allow_new + s.both_block_diff_reason > 0:
+        triage_html = (
+            '<div class="mt-3 text-xs text-zinc-500">'
+            'queue empty -- run <code>operator outreach gate-review ingest</code>'
+            '</div>'
+        )
     samples_html = ""
     if s.sample_would_block:
         samples_html += '<div class="mt-4 text-xs">'
@@ -100,9 +118,10 @@ def _product_card(s: outreach_audit.ProductSummary, threshold: float) -> str:
         f'    {_bar("would_allow_new", s.would_allow_new, s.total, "bg-amber-500/70")}'
         f'    {_bar("both_block_diff_reason", s.both_block_diff_reason, s.total, "bg-zinc-500/70")}'
         f'  </div>'
+        f'  {triage_html}'
         f'  {samples_html}'
         f'  <div class="mt-4 text-[11px] text-zinc-500">'
-        f'    {s.total} events &middot; match% required &ge; {threshold:.1f}'
+        f'    {s.total} events &middot; match% &ge; {threshold:.1f} + triaged% == 100 to flip'
         f'  </div>'
         f'</section>'
     )

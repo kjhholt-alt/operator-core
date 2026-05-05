@@ -27,16 +27,33 @@ class ProductSummary:
     error: int = 0
     sample_would_block: list = field(default_factory=list)
     sample_would_allow: list = field(default_factory=list)
+    # Triage state from gate_review queue (filled in by collect()).
+    triage_total: int = 0
+    triage_pending: int = 0
+    triage_triaged: int = 0
 
     @property
     def match_pct(self) -> float:
         return (self.match / self.total * 100.0) if self.total else 0.0
+
+    @property
+    def triaged_pct(self) -> float:
+        if self.triage_total == 0:
+            # Nothing in the queue -> nothing to triage. Treat as 100% so
+            # products with no disagreements at all stay READY.
+            return 100.0
+        return self.triage_triaged / self.triage_total * 100.0
+
+    @property
+    def fully_triaged(self) -> bool:
+        return self.triage_pending == 0
 
     def cutover_ready(self, threshold_pct: float = 95.0) -> bool:
         return (
             self.total > 0
             and self.match_pct >= threshold_pct
             and self.would_allow_new == 0
+            and self.fully_triaged
         )
 
 
@@ -82,8 +99,12 @@ def _iter_events(paths: Iterable[Path]) -> Iterable[dict]:
                 yield env
 
 
-def collect(paths: List[Path], since: Optional[datetime] = None) -> List[ProductSummary]:
-    """Walk events, group by product, count agreements."""
+def collect(paths: List[Path], since: Optional[datetime] = None,
+            *, triage_db_path: Optional[Path] = None,
+            include_triage: bool = True) -> List[ProductSummary]:
+    """Walk events, group by product, count agreements. Optionally annotate
+    each product with triage state from the gate_review queue so the
+    cut-over rule can require triaged% == 100."""
     by_product: dict[str, ProductSummary] = {}
     for env in _iter_events(paths):
         ts = _parse_ts(env.get("ts"))
@@ -121,6 +142,20 @@ def collect(paths: List[Path], since: Optional[datetime] = None) -> List[Product
             s.both_block_diff_reason += 1
         else:
             s.error += 1
+
+    if include_triage:
+        try:
+            from . import gate_review
+            triage_by_product = {t.product: t for t in
+                                 gate_review.triage_summary(db_path=triage_db_path)}
+            for s in by_product.values():
+                t = triage_by_product.get(s.product)
+                if t is not None:
+                    s.triage_total = t.total
+                    s.triage_pending = t.pending
+                    s.triage_triaged = t.triaged
+        except Exception:  # pragma: no cover - defensive
+            pass
     return sorted(by_product.values(), key=lambda x: x.product)
 
 
@@ -142,7 +177,8 @@ def render_table(summaries: List[ProductSummary], threshold: float) -> str:
     name_w = max(8, max(len(s.product) for s in summaries) + 2)
     header = (
         f"{'PRODUCT':<{name_w}} {'TOTAL':>6} {'MATCH%':>7} "
-        f"{'WBLOCK':>7} {'WALLOW':>7} {'DIFFR':>6} {'READY':>6}"
+        f"{'WBLOCK':>7} {'WALLOW':>7} {'DIFFR':>6} "
+        f"{'TRIAGE%':>8} {'READY':>6}"
     )
     lines = [header, "-" * len(header)]
     for s in summaries:
@@ -154,12 +190,13 @@ def render_table(summaries: List[ProductSummary], threshold: float) -> str:
             f"{s.would_block_new:>7} "
             f"{s.would_allow_new:>7} "
             f"{s.both_block_diff_reason:>6} "
+            f"{s.triaged_pct:>7.1f}% "
             f"{ready:>6}"
         )
     lines.append("")
     lines.append(
-        f"Decision rule: cut-over READY when match% >= {threshold:.1f} "
-        f"and would_allow_new == 0."
+        f"Decision rule: cut-over READY when match% >= {threshold:.1f}, "
+        f"would_allow_new == 0, and triaged% == 100 (no pending review items)."
     )
     # Sample lines (first 3 per product)
     for s in summaries:
@@ -191,6 +228,10 @@ def render_json(summaries: List[ProductSummary], threshold: float) -> str:
                 "would_allow_new": s.would_allow_new,
                 "both_block_diff_reason": s.both_block_diff_reason,
                 "error": s.error,
+                "triage_total": s.triage_total,
+                "triage_pending": s.triage_pending,
+                "triage_triaged": s.triage_triaged,
+                "triaged_pct": round(s.triaged_pct, 2),
                 "cutover_ready": s.cutover_ready(threshold),
                 "sample_would_block": s.sample_would_block,
                 "sample_would_allow": s.sample_would_allow,
