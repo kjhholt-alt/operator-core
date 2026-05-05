@@ -164,6 +164,7 @@ def render_ops_page(status: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
   <p class="muted">
     <a href="/ops">/ops</a> &middot;
     <a href="/gate-review">/gate-review</a> &middot;
+    <a href="/cut-over">/cut-over</a> &middot;
     <a href="/metrics">/metrics</a> &middot;
     <a href="/health">/health</a>
   </p>

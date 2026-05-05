@@ -171,7 +171,105 @@ def render_metrics(
     lines.append("# TYPE operator_cost_usd_today gauge")
     lines.append(f"operator_cost_usd_today {cost_today:.4f}")
 
+    # operator_gate_review_resolutions_total + ratio (cycle: classifier metrics)
+    lines.extend(_gate_review_metric_lines())
+
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Gate-review classifier vs human resolution metrics.
+#
+# Reads directly from the gate_review SQLite -- no separate counter table
+# needed because resolved_by already records the actor on every row. Bucket
+# resolved_by values into "auto" (auto-classifier:*), "web" (web-ui),
+# "discord" (operator-bot or similar), "cli", or "other" so the labels stay
+# bounded.
+# ---------------------------------------------------------------------------
+
+def _classify_resolver(resolved_by: str | None) -> str:
+    if not resolved_by:
+        return "unknown"
+    if resolved_by.startswith("auto-classifier:"):
+        return "auto"
+    if resolved_by == "web-ui":
+        return "web"
+    if resolved_by == "cli":
+        return "cli"
+    if resolved_by.startswith("discord") or resolved_by == "operator-bot":
+        return "discord"
+    if resolved_by.startswith("operator-core/"):
+        # e.g. operator-core/suppression_pr stamps suppression-PR auto-mark.
+        return "auto"
+    return "other"
+
+
+def _gate_review_metric_lines() -> list[str]:
+    """Read gate_review review_items aggregates and emit Prometheus lines."""
+    try:
+        from . import gate_review
+    except ImportError:
+        return []
+    try:
+        with gate_review.open_db() as conn:
+            cur = conn.execute(
+                "SELECT product, status, resolved_by, COUNT(*) AS n "
+                "FROM review_items GROUP BY product, status, resolved_by"
+            )
+            rows = list(cur.fetchall())
+    except Exception:
+        return []
+
+    if not rows:
+        return []
+
+    # Counter shape: per (product, status, source)
+    out: list[str] = []
+    out.append("# TYPE operator_gate_review_resolutions_total counter")
+    # Aggregates for ratio: per product, count auto vs human resolutions
+    # (where status != 'pending').
+    auto_per_product: dict[str, int] = {}
+    human_per_product: dict[str, int] = {}
+    pending_per_product: dict[str, int] = {}
+
+    for r in rows:
+        product = r["product"]
+        status_v = r["status"]
+        n = int(r["n"])
+        source = _classify_resolver(r["resolved_by"]) if status_v != "pending" else "pending"
+        out.append(
+            f"operator_gate_review_resolutions_total"
+            f"{_fmt_labels({'product': product, 'status': status_v, 'source': source})} {n}"
+        )
+        if status_v == "pending":
+            pending_per_product[product] = pending_per_product.get(product, 0) + n
+            continue
+        if source == "auto":
+            auto_per_product[product] = auto_per_product.get(product, 0) + n
+        else:
+            human_per_product[product] = human_per_product.get(product, 0) + n
+
+    # Pending gauge.
+    out.append("# TYPE operator_gate_review_pending gauge")
+    if not pending_per_product:
+        out.append("operator_gate_review_pending 0")
+    for product, n in sorted(pending_per_product.items()):
+        out.append(f"operator_gate_review_pending{_fmt_labels({'product': product})} {n}")
+
+    # Auto-classify ratio: auto / (auto + human). 0 if no resolutions yet.
+    out.append("# TYPE operator_gate_review_auto_classify_ratio gauge")
+    products = set(auto_per_product) | set(human_per_product)
+    if not products:
+        out.append("operator_gate_review_auto_classify_ratio 0")
+    for product in sorted(products):
+        a = auto_per_product.get(product, 0)
+        h = human_per_product.get(product, 0)
+        ratio = (a / (a + h)) if (a + h) else 0.0
+        out.append(
+            f"operator_gate_review_auto_classify_ratio"
+            f"{_fmt_labels({'product': product})} {ratio:.4f}"
+        )
+    return out
 
 
 def register_metrics_route(server: Any, store: JobStore) -> None:

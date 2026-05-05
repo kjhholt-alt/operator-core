@@ -91,6 +91,10 @@ recipes:
     cron: "0 * * * *"
     enabled: true
     notes: open flag-flip PR on product repos after 24h READY streak (opt-in via env)
+  - name: cutover_rollback_watch
+    cron: "*/30 * * * *"
+    enabled: true
+    notes: alert if a recently-promoted product regresses (read-only safety net)
   - name: outreach_pulse
     cron: "30 6 * * *"
     enabled: true
