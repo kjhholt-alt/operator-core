@@ -87,6 +87,10 @@ recipes:
     cron: "*/30 * * * *"
     enabled: true
     notes: merge clean auto-suppress/* PRs on outreach-common (opt-in via env)
+  - name: cut_over_promoter
+    cron: "0 * * * *"
+    enabled: true
+    notes: open flag-flip PR on product repos after 24h READY streak (opt-in via env)
   - name: outreach_pulse
     cron: "30 6 * * *"
     enabled: true

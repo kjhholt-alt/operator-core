@@ -184,6 +184,16 @@ def cron_to_schtasks(cron: str) -> list[str]:
         n = hour[2:]
         return ["/SC", "HOURLY", "/MO", n, "/ST", f"00:{int(minute):02d}"]
 
+    # every hour at fixed minute ("M * * * *" -> /SC HOURLY /MO 1 /ST 00:M)
+    if (
+        hour == "*"
+        and dom == "*"
+        and month == "*"
+        and dow == "*"
+        and minute.isdigit()
+    ):
+        return ["/SC", "HOURLY", "/MO", "1", "/ST", f"00:{int(minute):02d}"]
+
     # daily
     if dom == "*" and month == "*" and dow == "*" and minute.isdigit() and hour.isdigit():
         return ["/SC", "DAILY", "/ST", f"{int(hour):02d}:{int(minute):02d}"]
@@ -369,6 +379,16 @@ def cron_to_launchd(cron: str) -> dict[str, Any] | None:
             return None
         return {"StartInterval": n * 3600}
 
+    # hourly at fixed minute ("M * * * *" -> StartInterval=3600 starting on the minute)
+    if (
+        hour == "*"
+        and dom == "*"
+        and month == "*"
+        and dow == "*"
+        and minute.isdigit()
+    ):
+        return {"StartCalendarInterval": {"Minute": int(minute)}}
+
     interval: dict[str, Any] = {}
     if minute.isdigit():
         interval["Minute"] = int(minute)
@@ -548,6 +568,16 @@ def cron_to_systemd_oncalendar(cron: str) -> str | None:
         and minute.isdigit()
     ):
         return f"*-*-* 0/{hour[2:]}:{int(minute):02d}:00"
+
+    # hourly at fixed minute ("M * * * *")
+    if (
+        hour == "*"
+        and dom == "*"
+        and month == "*"
+        and dow == "*"
+        and minute.isdigit()
+    ):
+        return f"*:{int(minute):02d}:00"
 
     # daily H:M
     if dom == "*" and month == "*" and dow == "*" and minute.isdigit() and hour.isdigit():
