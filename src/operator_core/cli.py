@@ -414,6 +414,22 @@ def _cmd_outreach_audit_report(args: argparse.Namespace) -> int:
     return 0 if outreach_audit.overall_ready(summaries, args.threshold) else 1
 
 
+def _cmd_outreach_audit_dashboard(args: argparse.Namespace) -> int:
+    """Render the cut-over audit dashboard as a single static HTML file."""
+    from . import outreach_audit, outreach_audit_html
+
+    paths = [Path(p) for p in (args.path or [])]
+    if not paths:
+        paths = outreach_audit.default_audit_paths()
+    since = outreach_audit._parse_since(args.since)
+    summaries = outreach_audit.collect(paths, since=since)
+    out_path = outreach_audit_html.render_to(
+        Path(args.out), summaries, args.threshold, since_label=args.since
+    )
+    print(f"wrote {out_path}")
+    return 0 if outreach_audit.overall_ready(summaries, args.threshold) else 1
+
+
 def _cmd_status_portfolio(args: argparse.Namespace) -> int:
     """Read status-spec/v1 docs across sibling repos and render a roll-up."""
     from . import portfolio_status
@@ -1056,6 +1072,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_audit.add_argument("--json", action="store_true", help="Emit JSON")
     p_audit.set_defaults(func=_cmd_outreach_audit_report)
+
+    p_audit_dash = outreach_sub.add_parser(
+        "audit-dashboard",
+        help="Render gate_audit ndjson as a single static HTML dashboard",
+    )
+    p_audit_dash.add_argument(
+        "--out",
+        type=Path,
+        default=Path.home() / ".operator" / "data" / "outreach" / "audit-dashboard.html",
+        help="Output HTML path (default: ~/.operator/data/outreach/audit-dashboard.html)",
+    )
+    p_audit_dash.add_argument("--since", help="Only count events newer than this (24h, 7d, ISO 8601)")
+    p_audit_dash.add_argument("--threshold", type=float, default=95.0, help="match%% required for READY")
+    p_audit_dash.add_argument("--path", action="append", default=[],
+                              help="Explicit gate_audit.ndjson path. Repeatable.")
+    p_audit_dash.set_defaults(func=_cmd_outreach_audit_dashboard)
 
     # sprint
     p_sprint = sub.add_parser(
