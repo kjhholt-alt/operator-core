@@ -81,3 +81,48 @@ def test_format_emits_when_ingest_landed():
     assert "pending total: 4" in msg
     assert "oe: 2" in msg
     assert "/op gate-review" in msg
+
+
+def test_format_surfaces_ingest_error():
+    mod = _load_recipe_module()
+    recipe = mod.GateAuditIngest()
+    msg = asyncio.run(recipe.format(_ctx(), {
+        "new": 0, "updated": 0, "pending_total": 0, "dry_run": False,
+        "ingest_error": "sqlite locked",
+    }))
+    assert "gate_audit_ingest failed" in msg
+    assert "sqlite locked" in msg
+
+
+def test_query_resilient_to_missing_audit_log(monkeypatch):
+    """If outreach_audit can't read its log, the recipe must not crash --
+    it fires every 10 min so a missing log file would otherwise pin the
+    scheduler in error state."""
+    mod = _load_recipe_module()
+    recipe = mod.GateAuditIngest()
+
+    from operator_core import outreach_audit
+
+    def boom(_paths):
+        raise FileNotFoundError("no such audit log")
+
+    monkeypatch.setattr(outreach_audit, "_iter_events", boom)
+
+    result = asyncio.run(recipe.query(_ctx(dry_run=True)))
+    assert result["events"] == []
+    assert result["new"] == 0
+    assert result["dry_run"] is True
+
+
+def test_query_swallows_ingest_exception(monkeypatch):
+    mod = _load_recipe_module()
+    recipe = mod.GateAuditIngest()
+
+    from operator_core import gate_review, outreach_audit
+
+    monkeypatch.setattr(outreach_audit, "_iter_events", lambda _p: [])
+    monkeypatch.setattr(gate_review, "ingest_events", lambda _e: (_ for _ in ()).throw(RuntimeError("db gone")))
+
+    result = asyncio.run(recipe.query(_ctx()))
+    assert result["new"] == 0
+    assert result["ingest_error"] == "db gone"

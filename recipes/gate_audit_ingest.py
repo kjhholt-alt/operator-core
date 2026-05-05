@@ -46,11 +46,25 @@ class GateAuditIngest(Recipe):
     async def query(self, ctx: RecipeContext) -> dict[str, Any]:
         from operator_core import gate_review, outreach_audit
 
-        paths = outreach_audit.default_audit_paths()
-        events = list(outreach_audit._iter_events(paths))
+        # Resilience: if the audit log doesn't exist yet (no shadow product
+        # has emitted any events) just return empty — fires every 10 min so
+        # we don't want to crash the daemon scheduler on a missing path.
+        try:
+            paths = outreach_audit.default_audit_paths()
+            events = list(outreach_audit._iter_events(paths))
+        except (FileNotFoundError, OSError) as exc:
+            ctx.logger.debug("gate_audit_ingest.no_log", extra={"error": str(exc)})
+            events = []
+
         if ctx.dry_run:
             return {"events": events, "new": 0, "updated": 0, "dry_run": True}
-        new, updated = gate_review.ingest_events(events)
+
+        try:
+            new, updated = gate_review.ingest_events(events)
+        except Exception as exc:  # noqa: BLE001
+            ctx.logger.warning("gate_audit_ingest.ingest_failed", extra={"error": str(exc)})
+            return {"events": events, "new": 0, "updated": 0, "dry_run": False, "ingest_error": str(exc)}
+
         return {"events": events, "new": new, "updated": updated, "dry_run": False}
 
     async def analyze(self, ctx: RecipeContext, data: dict[str, Any]) -> dict[str, Any]:
@@ -77,6 +91,8 @@ class GateAuditIngest(Recipe):
         new = int(result.get("new", 0))
         updated = int(result.get("updated", 0))
         pending_total = int(result.get("pending_total", 0))
+        if result.get("ingest_error"):
+            return f":warning: gate_audit_ingest failed: `{result['ingest_error']}`"
         if new == 0 and updated == 0:
             return ""
         breakdown = result.get("pending_by_product") or {}
