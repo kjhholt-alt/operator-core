@@ -1,0 +1,41 @@
+name: verify
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - "feat/**"
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: operator verify (recipes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev] || python -m pip install -e .
+
+      - name: Run pytest
+        run: python -m pytest -q
+
+      - name: Run operator recipe verify
+        env:
+          OPERATOR_VERIFY_DRY: "1"
+        run: |
+          python -m operator_core.cli recipe verify --json
