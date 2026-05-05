@@ -736,6 +736,151 @@ def _cmd_demo_briefing(args: argparse.Namespace) -> int:
     return demo_mod.run_briefing(settings)
 
 
+# --- recipe framework commands ----------------------------------------------
+
+def _recipes_dir() -> Path:
+    """Top-level ``recipes/`` folder next to this package's repo root."""
+    here = Path(__file__).resolve()
+    # src/operator_core/cli.py -> repo root
+    candidate = here.parent.parent.parent / "recipes"
+    return candidate
+
+
+def _ensure_recipes_loaded() -> None:
+    from .recipes import discover_recipes, list_registered_recipes
+
+    if list_registered_recipes():
+        return
+    discover_recipes(_recipes_dir())
+
+
+def _cmd_recipe_list(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from .recipes import list_registered_recipes
+
+    _ensure_recipes_loaded()
+    recipes = list_registered_recipes()
+    if args.json:
+        print(_json.dumps(
+            [
+                {
+                    "name": r.name,
+                    "version": r.version,
+                    "description": r.description,
+                    "schedule": r.schedule,
+                    "cost_budget_usd": r.cost_budget_usd,
+                    "discord_channel": r.discord_channel,
+                    "tags": list(r.tags),
+                }
+                for r in recipes
+            ],
+            indent=2,
+        ))
+        return 0
+    if not recipes:
+        print(f"no recipes found in {_recipes_dir()}", file=sys.stderr)
+        return 1
+    print(f"{len(recipes)} recipes:")
+    for r in recipes:
+        sched = r.schedule or "on-demand"
+        budget = f"${r.cost_budget_usd:.2f}" if r.cost_budget_usd else "no budget"
+        print(f"  - {r.name:<30} v{r.version:<8} {sched:<14} {budget:<12} {r.description}")
+    return 0
+
+
+def _cmd_recipe_run(args: argparse.Namespace) -> int:
+    import asyncio as _asyncio
+
+    from .recipes import run_recipe
+
+    _ensure_recipes_loaded()
+    try:
+        result = _asyncio.run(run_recipe(args.name, dry_run=args.dry_run))
+    except KeyError as exc:
+        print(f"unknown recipe: {exc}", file=sys.stderr)
+        return 2
+    print(f"[recipe] {args.name} -> {result.status} (cost ${result.cost_usd:.4f}, {result.duration_sec:.2f}s)")
+    if result.error:
+        print(f"  error: {result.error}", file=sys.stderr)
+    return 0 if result.status in {"ok", "skipped"} else 1
+
+
+def _cmd_recipe_verify(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from .recipes.verify import verify_all_sync
+
+    _ensure_recipes_loaded()
+    report = verify_all_sync()
+    if args.json:
+        print(_json.dumps({
+            "total": report.total,
+            "passed": report.passed,
+            "failed": report.failed,
+            "failures": report.failures,
+            "green": report.green,
+        }, indent=2))
+        return 0 if report.green else 1
+    print(f"verify: {report.passed}/{report.total} passed")
+    for name, err in report.failures:
+        print(f"  FAIL {name}: {err}", file=sys.stderr)
+    return 0 if report.green else 1
+
+
+def _schedule_path() -> Path:
+    here = Path(__file__).resolve()
+    return here.parent.parent.parent / "schedules" / "schedule.yaml"
+
+
+def _cmd_schedule_list(args: argparse.Namespace) -> int:
+    from .recipes.schedule import list_windows_tasks, load_schedule
+
+    if args.installed:
+        names = list_windows_tasks()
+        if not names:
+            print("no operator-recipe-* tasks registered")
+            return 0
+        for n in names:
+            print(n)
+        return 0
+
+    schedule = load_schedule(_schedule_path())
+    if not schedule.recipes:
+        print(f"no recipes scheduled in {_schedule_path()}")
+        return 0
+    print(f"{len(schedule.recipes)} scheduled recipes (v{schedule.version}):")
+    for r in schedule.recipes:
+        flag = "on" if r.enabled else "OFF"
+        print(f"  [{flag}] {r.name:<30} {r.cron:<16} {r.notes}")
+    return 0
+
+
+def _cmd_schedule_install(args: argparse.Namespace) -> int:
+    from .recipes.schedule import install_windows_tasks, load_schedule
+
+    schedule = load_schedule(_schedule_path())
+    if not schedule.recipes:
+        print(f"no recipes scheduled in {_schedule_path()}", file=sys.stderr)
+        return 1
+    plans = install_windows_tasks(schedule, dry_run=args.dry_run)
+    failures = 0
+    for plan in plans:
+        if plan.get("error"):
+            failures += 1
+            print(f"  FAIL {plan.get('recipe')}: {plan['error']}", file=sys.stderr)
+        elif plan.get("skipped"):
+            print(f"  SKIP {plan.get('recipe')}: {plan['skipped']}")
+        elif plan.get("dry_run"):
+            print(f"  PLAN {plan.get('recipe')}: {' '.join(plan.get('argv', []))}")
+        else:
+            rc = plan.get("returncode")
+            print(f"  {'OK' if rc == 0 else 'FAIL'} {plan.get('recipe')} -> {plan.get('task')} (rc={rc})")
+            if rc != 0:
+                failures += 1
+    return 0 if failures == 0 else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="operator",
@@ -927,6 +1072,47 @@ def build_parser() -> argparse.ArgumentParser:
         "briefing", help="Live portfolio briefing — header + heartbeat + ticker"
     )
     p_demo_briefing.set_defaults(func=_cmd_demo_briefing)
+
+    # recipe (declarative recipe framework -- see operator_core.recipes)
+    p_recipe = sub.add_parser(
+        "recipe",
+        help="List, run, or verify declarative recipes",
+    )
+    recipe_sub = p_recipe.add_subparsers(dest="recipe_command", required=True)
+
+    p_recipe_list = recipe_sub.add_parser("list", help="List all registered recipes")
+    p_recipe_list.add_argument("--json", action="store_true", help="Emit JSON")
+    p_recipe_list.set_defaults(func=_cmd_recipe_list)
+
+    p_recipe_run = recipe_sub.add_parser("run", help="Run one recipe by name")
+    p_recipe_run.add_argument("name", help="Recipe name (operator recipe list)")
+    p_recipe_run.add_argument("--dry-run", action="store_true", help="Verify only; no posts/writes")
+    p_recipe_run.set_defaults(func=_cmd_recipe_run)
+
+    p_recipe_verify = recipe_sub.add_parser(
+        "verify",
+        help="Run verify() on every recipe; CI-friendly",
+    )
+    p_recipe_verify.add_argument("--json", action="store_true", help="Emit JSON")
+    p_recipe_verify.set_defaults(func=_cmd_recipe_verify)
+
+    # schedule (replaces run-*.bat hell)
+    p_schedule = sub.add_parser(
+        "schedule",
+        help="Install / list cron-driven recipe tasks via Windows Task Scheduler",
+    )
+    schedule_sub = p_schedule.add_subparsers(dest="schedule_command", required=True)
+
+    p_schedule_list = schedule_sub.add_parser("list", help="Show schedule.yaml entries")
+    p_schedule_list.add_argument("--installed", action="store_true", help="Show only currently registered Windows tasks")
+    p_schedule_list.set_defaults(func=_cmd_schedule_list)
+
+    p_schedule_install = schedule_sub.add_parser(
+        "install",
+        help="Register every enabled schedule.yaml entry as a Windows task",
+    )
+    p_schedule_install.add_argument("--dry-run", action="store_true", help="Plan only; do not call schtasks")
+    p_schedule_install.set_defaults(func=_cmd_schedule_install)
 
     # version
     p_version = sub.add_parser("version", help="Print version")
