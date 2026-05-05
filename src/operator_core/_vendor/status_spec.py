@@ -120,11 +120,12 @@ def write_component_status(
     # Also emit a canonical status-spec/v1 document when the real lib is
     # available. Failures here never break the legacy write -- canonical
     # emission is an additive observability path.
-    if _USING_REAL_LIB:
-        try:
-            _emit_canonical_aggregate(target_dir, components)
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("[status-spec] canonical emit failed: %s", exc)
+    # Canonical status-spec/v1 emission is the daemon's responsibility
+    # (utils.status -> utils.status_spec_emit). The recipes runtime used
+    # to also emit here, which racewise overwrote the daemon's richer
+    # subsystem view. We keep the helper for explicit callers / tests
+    # but skip the implicit emit. Callers that DO want a recipes-only
+    # canonical doc can call _emit_canonical_aggregate_to() directly.
 
     return payload
 

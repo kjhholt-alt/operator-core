@@ -158,11 +158,21 @@ def test_lazy_path_resolution_picks_up_env_change(tmp_path, monkeypatch):
     reason="canonical aggregate requires real status-spec package",
 )
 def test_canonical_aggregate_emits_status_spec_v1(tmp_path, monkeypatch):
+    """The shim's _emit_canonical_aggregate_to() builds a valid status-spec/v1 doc.
+
+    Note: write_component_status no longer auto-emits the canonical doc
+    (see comment in shim — daemon owns that path). This test exercises
+    the helper directly so the translation logic stays covered.
+    """
     monkeypatch.setenv("OPERATOR_STATUS_DIR", str(tmp_path / "status"))
     status_spec.write_component_status("a", "ok", duration_sec=1.0, cost_usd=0.05)
     status_spec.write_component_status("b", "warn", duration_sec=2.0, error="slow")
-    canonical = tmp_path / "status-spec.json"
-    assert canonical.exists()
+    canonical = tmp_path / "canonical.json"
+    components = {
+        "a": {"name": "a", "status": "ok", "cost_usd": 0.05},
+        "b": {"name": "b", "status": "warn", "cost_usd": 0.0, "error": "slow"},
+    }
+    status_spec._emit_canonical_aggregate_to(canonical, tmp_path / "status", components)
     doc = json.loads(canonical.read_text(encoding="utf-8"))
     assert doc["schema_version"] == "status-spec/v1"
     assert doc["health"] == "yellow"  # one warn -> yellow
@@ -182,10 +192,30 @@ def test_canonical_aggregate_health_red_on_error(tmp_path, monkeypatch):
     monkeypatch.setenv("OPERATOR_STATUS_DIR", str(tmp_path / "status"))
     status_spec.write_component_status("a", "ok")
     status_spec.write_component_status("b", "error", error="boom")
-    canonical = tmp_path / "status-spec.json"
+    canonical = tmp_path / "canonical.json"
+    components = {
+        "a": {"name": "a", "status": "ok"},
+        "b": {"name": "b", "status": "error", "error": "boom"},
+    }
+    status_spec._emit_canonical_aggregate_to(canonical, tmp_path / "status", components)
     doc = json.loads(canonical.read_text(encoding="utf-8"))
     assert doc["health"] == "red"
     assert doc["counters"]["components_errors"] == 1
+
+
+@pytest.mark.skipif(
+    not status_spec.using_real_lib(),
+    reason="canonical aggregate requires real status-spec package",
+)
+def test_write_component_status_does_NOT_auto_emit_canonical(tmp_path, monkeypatch):
+    """Regression: the daemon owns canonical emit. Recipes runtime must not race it."""
+    monkeypatch.setenv("OPERATOR_STATUS_DIR", str(tmp_path / "status"))
+    status_spec.write_component_status("recipe_a", "ok")
+    canonical = tmp_path / "status-spec.json"
+    assert not canonical.exists(), (
+        "write_component_status should not auto-emit canonical "
+        "(daemon owns that path; concurrent writes were racing)"
+    )
 
 
 # ---------------------------------------------------------------------------
