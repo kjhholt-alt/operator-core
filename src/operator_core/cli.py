@@ -396,6 +396,24 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return status_tui.render(once=args.once, json_mode=args.json)
 
 
+def _cmd_outreach_audit_report(args: argparse.Namespace) -> int:
+    """Read gate_audit events and decide cut-over readiness per product."""
+    from . import outreach_audit
+
+    paths = [Path(p) for p in (args.path or [])]
+    if not paths:
+        paths = outreach_audit.default_audit_paths()
+    since = outreach_audit._parse_since(args.since)
+    summaries = outreach_audit.collect(paths, since=since)
+    out = (
+        outreach_audit.render_json(summaries, args.threshold)
+        if getattr(args, "json", False)
+        else outreach_audit.render_table(summaries, args.threshold)
+    )
+    print(out, end="")
+    return 0 if outreach_audit.overall_ready(summaries, args.threshold) else 1
+
+
 def _cmd_status_portfolio(args: argparse.Namespace) -> int:
     """Read status-spec/v1 docs across sibling repos and render a roll-up."""
     from . import portfolio_status
@@ -1007,6 +1025,37 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_status_portfolio.add_argument("--json", action="store_true", help="Emit JSON")
     p_status_portfolio.set_defaults(func=_cmd_status_portfolio)
+
+    # outreach
+    p_outreach = sub.add_parser(
+        "outreach",
+        help="Sender Gate cut-over tooling (audit-report, etc)",
+    )
+    outreach_sub = p_outreach.add_subparsers(dest="outreach_command", required=True)
+
+    p_audit = outreach_sub.add_parser(
+        "audit-report",
+        help="Read gate_audit ndjson and report cut-over readiness per product",
+    )
+    p_audit.add_argument(
+        "--since",
+        help="Only count events newer than this. e.g. '24h', '7d', '30m', or ISO 8601.",
+    )
+    p_audit.add_argument(
+        "--threshold",
+        type=float,
+        default=95.0,
+        help="match%% required for cut-over READY (default 95).",
+    )
+    p_audit.add_argument(
+        "--path",
+        action="append",
+        default=[],
+        help="Explicit gate_audit.ndjson path. Repeatable. "
+             "Default: $OUTREACH_GATE_AUDIT_PATH + ~/.operator/data/outreach/**/gate_audit.ndjson",
+    )
+    p_audit.add_argument("--json", action="store_true", help="Emit JSON")
+    p_audit.set_defaults(func=_cmd_outreach_audit_report)
 
     # sprint
     p_sprint = sub.add_parser(
