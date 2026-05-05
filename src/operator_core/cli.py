@@ -429,20 +429,60 @@ def _cmd_gate_review_ingest(args: argparse.Namespace) -> int:
 def _cmd_gate_review_list(args: argparse.Namespace) -> int:
     from . import gate_review
 
+    if getattr(args, "watch", 0):
+        return _watch_gate_review_list(args)
+
     items = gate_review.list_pending(args.product, limit=args.limit)
     if getattr(args, "json", False):
         from dataclasses import asdict
         print(json.dumps([asdict(i) for i in items], indent=2))
         return 0
+    _print_gate_review_list(items)
+    return 0
+
+
+def _print_gate_review_list(items) -> None:
     if not items:
         print("No pending review items.")
-        return 0
+        return
     name_w = max(8, max(len(i.product) for i in items) + 2)
     print(f"{'ID':>5}  {'PRODUCT':<{name_w}} {'AGREEMENT':<22} HITS  BUSINESS")
     for i in items:
         bn = (i.business_name or "(no name)")[:50]
         print(f"{i.id:>5}  {i.product:<{name_w}} {i.agreement:<22} {i.hit_count:>4}  {bn}")
-    return 0
+
+
+def _watch_gate_review_list(args: argparse.Namespace) -> int:
+    """Live-refresh terminal view. Re-renders every args.watch seconds."""
+    import time
+    from datetime import datetime
+    from . import gate_review
+
+    interval = max(1, int(args.watch))
+    try:
+        while True:
+            # ANSI clear screen + home cursor.
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.flush()
+
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"== gate-review watch (every {interval}s) -- {ts} -- Ctrl-C to exit ==\n")
+
+            summaries = gate_review.triage_summary()
+            if summaries:
+                name_w = max(8, max(len(s.product) for s in summaries) + 2)
+                print(f"{'PRODUCT':<{name_w}} {'TOTAL':>6} {'PENDING':>8} {'TRIAGED':>8} {'TRIAGED%':>9}")
+                for s in summaries:
+                    print(f"{s.product:<{name_w}} {s.total:>6} {s.pending:>8} {s.triaged:>8} {s.triaged_pct:>8.1f}%")
+                print()
+
+            items = gate_review.list_pending(args.product, limit=args.limit)
+            _print_gate_review_list(items)
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        print("\n(watch stopped)")
+        return 0
 
 
 def _cmd_gate_review_show(args: argparse.Namespace) -> int:
@@ -470,6 +510,22 @@ def _cmd_gate_review_resolve(args: argparse.Namespace) -> int:
     print(f"resolved #{item.id} -> {item.status}"
           + (f" (note: {item.resolution_note})" if item.resolution_note else "")
           + f" by {item.resolved_by} at {item.resolved_ts}")
+    return 0
+
+
+def _cmd_gate_review_auto_classify(args: argparse.Namespace) -> int:
+    from . import gate_review_classifier
+
+    res = gate_review_classifier.classify_pending(
+        min_hits=args.min_hits, dry_run=args.dry_run,
+    )
+    label = "would resolve" if args.dry_run else "auto-resolved"
+    print(f"inspected {res.inspected} pending items; {label} {res.auto_resolved}.")
+    if any(res.rules_fired.values()):
+        print("by rule:")
+        for rule, n in sorted(res.rules_fired.items()):
+            if n:
+                print(f"  {rule}: {n}")
     return 0
 
 
@@ -1280,7 +1336,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_review_list.add_argument("--product", help="Filter to one product")
     p_review_list.add_argument("--limit", type=int, default=50)
     p_review_list.add_argument("--json", action="store_true")
+    p_review_list.add_argument(
+        "--watch", type=int, default=0, metavar="SECONDS",
+        help="Live-refresh terminal view; re-render every N seconds (Ctrl-C to exit)",
+    )
     p_review_list.set_defaults(func=_cmd_gate_review_list)
+
+    p_review_classify = review_sub.add_parser(
+        "auto-classify",
+        help="Run the auto-classifier on pending items (network_scrub recurrence + tld guard)",
+    )
+    p_review_classify.add_argument("--min-hits", type=int, default=2,
+                                    help="Minimum hit_count required to auto-resolve (default 2)")
+    p_review_classify.add_argument("--dry-run", action="store_true",
+                                    help="Report counts without writing")
+    p_review_classify.set_defaults(func=_cmd_gate_review_auto_classify)
 
     p_review_show = review_sub.add_parser("show", help="Show a single review item by id")
     p_review_show.add_argument("id", type=int)

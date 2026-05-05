@@ -178,6 +178,54 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Cache keyed by (stream, resolved_path) so a process whose
+# OPERATOR_EVENTS_DIR changes mid-run (mostly tests) gets a fresh Writer
+# pointed at the new directory instead of a stale fd from a deleted tmp.
+_REAL_WRITER_CACHE: Dict[tuple, Any] = {}
+_REAL_WRITER_LOCK = threading.Lock()
+
+
+def _real_writer_for(stream: str) -> Optional[Any]:
+    """Lazy-instantiate (and cache) a real events_ndjson.Writer per (stream, path).
+
+    Returns ``None`` if the real lib isn't installed or the stream isn't
+    registered in the lib's schema registry. The caller falls back to the
+    legacy flat-envelope file write in that case.
+    """
+    if not _USING_REAL_LIB:
+        return None
+    target_path = _stream_path(stream)
+    key = (stream, str(target_path))
+    cached = _REAL_WRITER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        from events_ndjson import Writer as _RealWriter  # type: ignore
+        from events_ndjson.registry import is_registered  # type: ignore
+        if not is_registered(stream):
+            return None
+    except ImportError:
+        return None
+
+    with _REAL_WRITER_LOCK:
+        cached = _REAL_WRITER_CACHE.get(key)
+        if cached is not None:
+            return cached
+        try:
+            w = _RealWriter(
+                stream=stream,
+                source="operator-core",
+                path=target_path,
+                # Validate strictly when we can; the caller catches and
+                # falls back on validation failure.
+                validate_payload=True,
+            )
+        except Exception:
+            return None
+        _REAL_WRITER_CACHE[key] = w
+        return w
+
+
 def append_event(
     stream: str,
     kind: str,
@@ -189,14 +237,43 @@ def append_event(
 ) -> Dict[str, Any]:
     """Append one event to <events_dir>/<stream>.ndjson.
 
-    Simple file-per-stream API. Accepts any stream name (unlike the
-    strict cost-only ``Writer``).
+    Prefers the real ``events_ndjson.Writer`` (with schema validation)
+    when the lib is installed AND the stream is registered. Falls back
+    to a plain flat-envelope file write otherwise -- so callers like
+    the recipe runtime never break when the optional dep is missing
+    or when a payload doesn't conform to the strict schema.
     """
     if not isinstance(stream, str) or not stream:
         raise EventsNdjsonError("stream must be a non-empty string")
     if not isinstance(kind, str) or not kind:
         raise EventsNdjsonError("kind must be a non-empty string")
 
+    # ----- Try the real Writer first ----------------------------------------
+    writer = _real_writer_for(stream)
+    if writer is not None:
+        # Real Writer wants payload that conforms to <stream>.json schema.
+        # The runs schema requires `recipe` + `kind`; we put both in payload.
+        real_payload: Dict[str, Any] = {"kind": kind}
+        if recipe is not None:
+            real_payload["recipe"] = recipe
+        if payload:
+            for k, v in payload.items():
+                if v is not None:
+                    real_payload[k] = v
+        try:
+            envelope = writer.append(
+                event_type=kind,
+                payload=real_payload,
+                ts=ts,
+                correlation_id=correlation_id,
+            )
+            return envelope
+        except Exception:
+            # Validation failure or transient I/O issue -- fall through to
+            # the flat-envelope path so the caller's run still completes.
+            pass
+
+    # ----- Fallback: flat envelope written directly --------------------------
     envelope: Dict[str, Any] = {
         "ts": ts or _now_iso(),
         "stream": stream,

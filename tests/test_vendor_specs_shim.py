@@ -41,15 +41,19 @@ def test_using_real_lib_diagnostic_is_consistent():
 
 def test_append_event_and_read_back(tmp_path, monkeypatch):
     monkeypatch.setenv("OPERATOR_EVENTS_DIR", str(tmp_path))
+    # Reload so the writer cache picks up the env override.
+    import importlib
+    from operator_core._vendor import events_ndjson as _ev_reload
+    importlib.reload(_ev_reload)
 
-    e1 = events_ndjson.append_event(
+    _ev_reload.append_event(
         stream="runs",
         kind="started",
         recipe="test_recipe",
         correlation_id="c1",
         payload={"version": "1.0", "dry_run": False},
     )
-    e2 = events_ndjson.append_event(
+    _ev_reload.append_event(
         stream="runs",
         kind="finished",
         recipe="test_recipe",
@@ -57,12 +61,20 @@ def test_append_event_and_read_back(tmp_path, monkeypatch):
         payload={"status": "ok", "duration_sec": 0.5, "cost_usd": 0.01},
     )
 
-    events = events_ndjson.read_events("runs")
+    events = _ev_reload.read_events("runs")
     assert len(events) == 2
-    assert events[0]["kind"] == "started"
-    assert events[0]["version"] == "1.0"
-    assert events[1]["kind"] == "finished"
-    assert events[1]["cost_usd"] == 0.01
+
+    # Real Writer wraps all stream-specific fields inside `payload`; the
+    # fallback flat-envelope path puts them at the top level. Read both.
+    def _field(env, key):
+        if key in env:
+            return env[key]
+        return (env.get("payload") or {}).get(key)
+
+    assert _field(events[0], "kind") == "started"
+    assert _field(events[0], "version") == "1.0"
+    assert _field(events[1], "kind") == "finished"
+    assert _field(events[1], "cost_usd") == 0.01
 
 
 def test_append_event_rejects_empty_stream():

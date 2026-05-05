@@ -44,7 +44,8 @@ class GateAuditIngest(Recipe):
         return True
 
     async def query(self, ctx: RecipeContext) -> dict[str, Any]:
-        from operator_core import gate_review, outreach_audit
+        import os
+        from operator_core import gate_review, gate_review_classifier, outreach_audit
 
         # Resilience: if the audit log doesn't exist yet (no shadow product
         # has emitted any events) just return empty — fires every 10 min so
@@ -57,15 +58,46 @@ class GateAuditIngest(Recipe):
             events = []
 
         if ctx.dry_run:
-            return {"events": events, "new": 0, "updated": 0, "dry_run": True}
+            return {
+                "events": events, "new": 0, "updated": 0, "dry_run": True,
+                "auto_resolved": 0, "rules_fired": {},
+            }
 
         try:
             new, updated = gate_review.ingest_events(events)
         except Exception as exc:  # noqa: BLE001
             ctx.logger.warning("gate_audit_ingest.ingest_failed", extra={"error": str(exc)})
-            return {"events": events, "new": 0, "updated": 0, "dry_run": False, "ingest_error": str(exc)}
+            return {
+                "events": events, "new": 0, "updated": 0, "dry_run": False,
+                "ingest_error": str(exc),
+                "auto_resolved": 0, "rules_fired": {},
+            }
 
-        return {"events": events, "new": new, "updated": updated, "dry_run": False}
+        # Auto-classifier sweep (opt-out via env var). Runs after every
+        # ingest so newly-arrived items that match high-confidence rules
+        # never sit in the queue waiting on a human click.
+        auto_resolved = 0
+        rules_fired: dict[str, int] = {}
+        if os.environ.get("OPERATOR_GATE_REVIEW_AUTO_CLASSIFY", "1").strip().lower() in {"1", "true", "yes"}:
+            try:
+                min_hits = int(os.environ.get("OPERATOR_GATE_REVIEW_CLASSIFY_MIN_HITS", "2"))
+            except ValueError:
+                min_hits = 2
+            try:
+                cres = gate_review_classifier.classify_pending(min_hits=min_hits)
+                auto_resolved = cres.auto_resolved
+                rules_fired = cres.rules_fired
+            except Exception as exc:  # noqa: BLE001
+                ctx.logger.warning("gate_audit_ingest.classifier_failed", extra={"error": str(exc)})
+
+        return {
+            "events": events,
+            "new": new,
+            "updated": updated,
+            "dry_run": False,
+            "auto_resolved": auto_resolved,
+            "rules_fired": rules_fired,
+        }
 
     async def analyze(self, ctx: RecipeContext, data: dict[str, Any]) -> dict[str, Any]:
         from operator_core import gate_review
@@ -93,14 +125,19 @@ class GateAuditIngest(Recipe):
         pending_total = int(result.get("pending_total", 0))
         if result.get("ingest_error"):
             return f":warning: gate_audit_ingest failed: `{result['ingest_error']}`"
-        if new == 0 and updated == 0:
+        auto_resolved = int(result.get("auto_resolved", 0))
+        if new == 0 and updated == 0 and auto_resolved == 0:
             return ""
         breakdown = result.get("pending_by_product") or {}
         per = ", ".join(f"{p}: {n}" for p, n in sorted(breakdown.items()))
         lines = [
             "**Sender Gate audit ingest** -- new disagreements landed in the review queue.",
             f"- ingested: {new} new / {updated} updated",
-            f"- pending total: {pending_total}" + (f" ({per})" if per else ""),
-            "Triage with `/op gate-review` (Discord) or `operator outreach gate-review list`.",
         ]
+        if auto_resolved:
+            rules = result.get("rules_fired") or {}
+            rule_breakdown = ", ".join(f"{r}: {n}" for r, n in sorted(rules.items()) if n)
+            lines.append(f"- auto-resolved: {auto_resolved} (" + (rule_breakdown or "no breakdown") + ")")
+        lines.append(f"- pending total: {pending_total}" + (f" ({per})" if per else ""))
+        lines.append("Triage with `/op gate-review` (Discord) or open `/gate-review` in browser.")
         return "\n".join(lines)

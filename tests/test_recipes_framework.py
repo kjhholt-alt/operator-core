@@ -197,7 +197,13 @@ class TestRecipeRunner:
         runs = events_dir / "runs.ndjson"
         assert runs.exists()
         lines = [json.loads(l) for l in runs.read_text().splitlines() if l.strip()]
-        kinds = [e["kind"] for e in lines]
+        # Real Writer puts `kind` inside payload; fallback flat-envelope path
+        # puts it at top-level. Accept either.
+        def _kind(e):
+            if "kind" in e:
+                return e["kind"]
+            return (e.get("payload") or {}).get("kind")
+        kinds = [_kind(e) for e in lines]
         assert "started" in kinds
         assert "finished" in kinds
 
