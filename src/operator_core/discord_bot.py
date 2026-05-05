@@ -108,6 +108,24 @@ class OperatorDiscordBot:
             await message.reply(f"Approval recorded for `{parsed.job_id}` ({approvals}/2).")
             return
 
+        # Reply Copilot v2: gate-review and gate-resolve are inline replies,
+        # not background jobs -- they query/mutate the SQLite review queue
+        # synchronously and return the formatted result.
+        if parsed.action == "gate_review_next":
+            from . import gate_review_render
+            await message.reply(gate_review_render.render_next(parsed.project))
+            return
+        if parsed.action == "gate_resolve":
+            from . import gate_review_render
+            await message.reply(gate_review_render.render_resolve(
+                int(parsed.job_id or 0),
+                parsed.args.get("status", ""),
+                note=parsed.args.get("note") or None,
+                resolved_by=str(message.author.display_name
+                                  if hasattr(message, "author") else "discord"),
+            ))
+            return
+
         job_metadata: dict[str, Any] = {"source": "discord"}
         if parsed.args:
             job_metadata.update(parsed.args)

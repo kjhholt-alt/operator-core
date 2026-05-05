@@ -71,6 +71,12 @@ def help_text() -> str:
         "`!op sprint` - sprint recommendation",
         "`!op recipes` - list available agent recipes",
         "",
+        "__Sender Gate Cut-Over__",
+        "`!op gate-review` - show next pending gate disagreement",
+        "`!op gate-review <product>` - filter to one product",
+        "`!op gate-resolve <id> <status> [note]` - resolve a queue item",
+        "    statuses: approved_gate / approved_legacy / fix_gate / fix_legacy / suppressed",
+        "",
         "__Safety__",
         "- Auto-merge is OFF by default (`OPERATOR_AUTO_MERGE_ENABLED=0`)",
         "- Builds default to dry-run (`OPERATOR_V3_DRY_RUN=1`)",
@@ -222,5 +228,33 @@ def parse_operator_command(message: str) -> ParsedCommand:
         return ParsedCommand(action="recipes")
     if lowered == "sprint":
         return ParsedCommand(action="sprint_recommend")
+
+    # gate-review (Reply Copilot v2)
+    if lowered == "gate-review":
+        return ParsedCommand(action="gate_review_next")
+    gate_review_product_match = re.fullmatch(
+        r"gate-review\s+(\S+)", body, flags=re.IGNORECASE
+    )
+    if gate_review_product_match:
+        return ParsedCommand(
+            action="gate_review_next",
+            project=gate_review_product_match.group(1),
+        )
+
+    # gate-resolve <id> <status> [optional note words]
+    gate_resolve_match = re.fullmatch(
+        r"gate-resolve\s+(\d+)\s+(approved_gate|approved_legacy|fix_gate|fix_legacy|suppressed)(?:\s+(.+))?",
+        body,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if gate_resolve_match:
+        return ParsedCommand(
+            action="gate_resolve",
+            job_id=gate_resolve_match.group(1),
+            args={
+                "status": gate_resolve_match.group(2).lower(),
+                "note": (gate_resolve_match.group(3) or "").strip(),
+            },
+        )
 
     raise CommandParseError(f"Unknown command. {help_text()}")

@@ -64,8 +64,8 @@ def test_register_adds_expected_command_names():
     reg = register_slash_commands(bot, enqueue=lambda cmd: captured.append(cmd) or "job-1")
 
     assert isinstance(reg, SlashRegistration)
-    assert set(reg.command_names) == {"status", "morning", "deploy_check"}
-    assert set(bot.tree.registered.keys()) == {"status", "morning", "deploy_check"}
+    assert set(reg.command_names) == {"status", "morning", "deploy_check", "gate_review"}
+    assert set(bot.tree.registered.keys()) == {"status", "morning", "deploy_check", "gate_review"}
 
 
 def test_descriptions_are_non_empty():
@@ -133,9 +133,13 @@ def test_register_without_store_or_enqueue_raises():
 
 
 def test_slash_commands_constant_matches_shipped_set():
-    """Catch silent additions/removals of slash commands — V4 ships exactly 3."""
+    """Catch silent additions/removals of slash commands.
+
+    Shipped: status, morning, deploy_check + gate_review (Reply Copilot v2).
+    Adjust this set when adding a new slash command intentionally.
+    """
     names = {entry[0] for entry in SLASH_COMMANDS}
-    assert names == {"status", "morning", "deploy_check"}
+    assert names == {"status", "morning", "deploy_check", "gate_review"}
 
 
 def test_register_with_custom_command_subset():

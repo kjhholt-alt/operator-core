@@ -31,6 +31,7 @@ SLASH_COMMANDS: list[tuple[str, str, str]] = [
     ("status", "Daemon uptime, scheduler health, recent jobs, deploys, cost.", "!op status"),
     ("morning", "Run the morning briefing now.", "!op morning"),
     ("deploy_check", "Check health of the 4 SaaS apps.", "!op deploy check"),
+    ("gate_review", "Show next pending Sender Gate disagreement (cut-over triage).", "!op gate-review"),
 ]
 
 

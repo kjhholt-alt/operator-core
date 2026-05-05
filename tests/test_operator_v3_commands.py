@@ -25,3 +25,48 @@ def test_parse_rejects_non_operator_message():
         assert "!op" in str(exc)
     else:
         raise AssertionError("Expected CommandParseError")
+
+
+# Gate-review (Reply Copilot v2)
+
+
+def test_parse_gate_review_no_arg():
+    p = parse_operator_command("!op gate-review")
+    assert p.action == "gate_review_next"
+    assert p.project is None
+
+
+def test_parse_gate_review_with_product():
+    p = parse_operator_command("!op gate-review outreach-engine")
+    assert p.action == "gate_review_next"
+    assert p.project == "outreach-engine"
+
+
+def test_parse_gate_resolve_minimal():
+    p = parse_operator_command("!op gate-resolve 17 approved_gate")
+    assert p.action == "gate_resolve"
+    assert p.job_id == "17"
+    assert p.args["status"] == "approved_gate"
+    assert p.args["note"] == ""
+
+
+def test_parse_gate_resolve_with_note():
+    p = parse_operator_command("!op gate-resolve 5 approved_legacy this is a note about it")
+    assert p.action == "gate_resolve"
+    assert p.job_id == "5"
+    assert p.args["status"] == "approved_legacy"
+    assert p.args["note"] == "this is a note about it"
+
+
+def test_parse_gate_resolve_rejects_unknown_status():
+    try:
+        parse_operator_command("!op gate-resolve 1 totally_bogus")
+    except CommandParseError:
+        return
+    raise AssertionError("Expected CommandParseError on unknown status")
+
+
+def test_parse_gate_resolve_supports_all_valid_statuses():
+    for s in ("approved_gate", "approved_legacy", "fix_gate", "fix_legacy", "suppressed"):
+        p = parse_operator_command(f"!op gate-resolve 1 {s}")
+        assert p.args["status"] == s
