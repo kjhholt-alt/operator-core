@@ -96,6 +96,22 @@ def _write(status: dict[str, Any], path: Path | None = None) -> None:
     status["last_updated"] = datetime.now().isoformat()
     with open(target, "w", encoding="utf-8") as fh:
         json.dump(status, fh, indent=2, default=str)
+    _emit_status_spec_safe(status, target)
+
+
+def _emit_status_spec_safe(legacy: dict[str, Any], legacy_path: Path) -> None:
+    """Emit the status-spec/v1 sibling file alongside the legacy one.
+
+    Wrapped in a broad except so a failure in the emit path can't
+    take down callers that just wanted to update the legacy file.
+    The status-spec emit is purely additive; consumers fall back to
+    the legacy file if the new one is missing.
+    """
+    try:
+        from . import status_spec_emit
+        status_spec_emit.emit_alongside(legacy, legacy_path)
+    except Exception:  # pragma: no cover - belt and suspenders
+        pass
 
 
 # --- Legacy API (kept verbatim for backwards compat) -------------------------
