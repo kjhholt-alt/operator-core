@@ -414,6 +414,86 @@ def _cmd_outreach_audit_report(args: argparse.Namespace) -> int:
     return 0 if outreach_audit.overall_ready(summaries, args.threshold) else 1
 
 
+def _cmd_gate_review_ingest(args: argparse.Namespace) -> int:
+    from . import gate_review, outreach_audit
+
+    paths = [Path(p) for p in (args.path or [])]
+    if not paths:
+        paths = outreach_audit.default_audit_paths()
+    events = list(outreach_audit._iter_events(paths))
+    new, updated = gate_review.ingest_events(events)
+    print(f"ingested {len(events)} event(s) -> {new} new, {updated} updated")
+    return 0
+
+
+def _cmd_gate_review_list(args: argparse.Namespace) -> int:
+    from . import gate_review
+
+    items = gate_review.list_pending(args.product, limit=args.limit)
+    if getattr(args, "json", False):
+        from dataclasses import asdict
+        print(json.dumps([asdict(i) for i in items], indent=2))
+        return 0
+    if not items:
+        print("No pending review items.")
+        return 0
+    name_w = max(8, max(len(i.product) for i in items) + 2)
+    print(f"{'ID':>5}  {'PRODUCT':<{name_w}} {'AGREEMENT':<22} HITS  BUSINESS")
+    for i in items:
+        bn = (i.business_name or "(no name)")[:50]
+        print(f"{i.id:>5}  {i.product:<{name_w}} {i.agreement:<22} {i.hit_count:>4}  {bn}")
+    return 0
+
+
+def _cmd_gate_review_show(args: argparse.Namespace) -> int:
+    from dataclasses import asdict
+    from . import gate_review
+
+    item = gate_review.get_item(args.id)
+    if item is None:
+        print(f"no review item with id={args.id}")
+        return 1
+    print(json.dumps(asdict(item), indent=2))
+    return 0
+
+
+def _cmd_gate_review_resolve(args: argparse.Namespace) -> int:
+    from . import gate_review
+
+    try:
+        item = gate_review.resolve(
+            args.id, args.status, note=args.note, resolved_by=args.by,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}")
+        return 1
+    print(f"resolved #{item.id} -> {item.status}"
+          + (f" (note: {item.resolution_note})" if item.resolution_note else "")
+          + f" by {item.resolved_by} at {item.resolved_ts}")
+    return 0
+
+
+def _cmd_gate_review_summary(args: argparse.Namespace) -> int:
+    from . import gate_review
+
+    summaries = gate_review.triage_summary()
+    if getattr(args, "json", False):
+        print(json.dumps([
+            {"product": s.product, "total": s.total, "pending": s.pending,
+             "triaged": s.triaged, "triaged_pct": round(s.triaged_pct, 2)}
+            for s in summaries
+        ], indent=2))
+        return 0
+    if not summaries:
+        print("No review items yet.")
+        return 0
+    name_w = max(8, max(len(s.product) for s in summaries) + 2)
+    print(f"{'PRODUCT':<{name_w}} {'TOTAL':>6} {'PENDING':>8} {'TRIAGED':>8} {'TRIAGED%':>9}")
+    for s in summaries:
+        print(f"{s.product:<{name_w}} {s.total:>6} {s.pending:>8} {s.triaged:>8} {s.triaged_pct:>8.1f}%")
+    return 0 if all(s.pending == 0 for s in summaries) else 1
+
+
 def _cmd_outreach_audit_dashboard(args: argparse.Namespace) -> int:
     """Render the cut-over audit dashboard as a single static HTML file."""
     from . import outreach_audit, outreach_audit_html
@@ -1088,6 +1168,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_audit_dash.add_argument("--path", action="append", default=[],
                               help="Explicit gate_audit.ndjson path. Repeatable.")
     p_audit_dash.set_defaults(func=_cmd_outreach_audit_dashboard)
+
+    # gate-review (Reply Copilot v2)
+    p_review = outreach_sub.add_parser(
+        "gate-review",
+        help="Triage gate-vs-legacy disagreements (queue-backed)",
+    )
+    review_sub = p_review.add_subparsers(dest="review_command", required=True)
+
+    p_review_ingest = review_sub.add_parser(
+        "ingest", help="Pull disagreements from gate_audit ndjson into the review queue",
+    )
+    p_review_ingest.add_argument("--path", action="append", default=[],
+                                  help="gate_audit.ndjson source. Repeatable.")
+    p_review_ingest.set_defaults(func=_cmd_gate_review_ingest)
+
+    p_review_list = review_sub.add_parser("list", help="List pending review items")
+    p_review_list.add_argument("--product", help="Filter to one product")
+    p_review_list.add_argument("--limit", type=int, default=50)
+    p_review_list.add_argument("--json", action="store_true")
+    p_review_list.set_defaults(func=_cmd_gate_review_list)
+
+    p_review_show = review_sub.add_parser("show", help="Show a single review item by id")
+    p_review_show.add_argument("id", type=int)
+    p_review_show.set_defaults(func=_cmd_gate_review_show)
+
+    p_review_resolve = review_sub.add_parser(
+        "resolve", help="Set the resolution status on a review item",
+    )
+    p_review_resolve.add_argument("id", type=int)
+    p_review_resolve.add_argument("status",
+                                   choices=["approved_gate", "approved_legacy",
+                                            "fix_gate", "fix_legacy", "suppressed"])
+    p_review_resolve.add_argument("--note", help="Why you chose this resolution")
+    p_review_resolve.add_argument("--by", default=os.environ.get("USER") or os.environ.get("USERNAME") or "unknown",
+                                   help="Who resolved this (default: $USER / $USERNAME)")
+    p_review_resolve.set_defaults(func=_cmd_gate_review_resolve)
+
+    p_review_summary = review_sub.add_parser(
+        "summary", help="Per-product triaged%% / pending counts",
+    )
+    p_review_summary.add_argument("--json", action="store_true")
+    p_review_summary.set_defaults(func=_cmd_gate_review_summary)
 
     # sprint
     p_sprint = sub.add_parser(
