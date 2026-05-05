@@ -301,7 +301,11 @@ def _render_item_card(item) -> str:
 # ---------------------------------------------------------------------------
 
 _AUTO_PR_LOCK = threading.Lock()
-_AUTO_PR_LAST_RUN = {"ts": 0.0}
+# `None` means "never run". Using 0.0 as a sentinel was a bug because
+# time.monotonic() on a fresh process can return a small value (e.g. 5s),
+# making (monotonic - 0.0 < 60) True and blocking the first trigger
+# entirely on cold-start systems like CI.
+_AUTO_PR_LAST_RUN: dict[str, float | None] = {"ts": None}
 
 
 def _maybe_trigger_auto_suppression_pr() -> None:
@@ -318,7 +322,8 @@ def _maybe_trigger_auto_suppression_pr() -> None:
     import time
     with _AUTO_PR_LOCK:
         now = time.monotonic()
-        if now - _AUTO_PR_LAST_RUN["ts"] < 60.0:
+        last = _AUTO_PR_LAST_RUN["ts"]
+        if last is not None and now - last < 60.0:
             return
         _AUTO_PR_LAST_RUN["ts"] = now
 

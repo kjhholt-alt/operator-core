@@ -229,8 +229,8 @@ class TestPostResolve:
 
 class TestAutoSuppressionTrigger:
     def setup_method(self):
-        # Reset the rate-limit timer between tests.
-        _AUTO_PR_LAST_RUN["ts"] = 0.0
+        # Reset the rate-limit timer between tests. None = "never run".
+        _AUTO_PR_LAST_RUN["ts"] = None
 
     def test_disabled_by_default_is_noop(self, monkeypatch):
         # Without env flag, must not spawn a thread or error.
