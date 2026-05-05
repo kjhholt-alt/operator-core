@@ -162,6 +162,17 @@ def cron_to_schtasks(cron: str) -> list[str]:
         n = minute[2:]
         return ["/SC", "MINUTE", "/MO", n]
 
+    # hourly with interval ("M */N * * *" -> /SC HOURLY /MO N /ST <minute past>)
+    if (
+        hour.startswith("*/")
+        and dom == "*"
+        and month == "*"
+        and dow == "*"
+        and minute.isdigit()
+    ):
+        n = hour[2:]
+        return ["/SC", "HOURLY", "/MO", n, "/ST", f"00:{int(minute):02d}"]
+
     # daily
     if dom == "*" and month == "*" and dow == "*" and minute.isdigit() and hour.isdigit():
         return ["/SC", "DAILY", "/ST", f"{int(hour):02d}:{int(minute):02d}"]
@@ -217,7 +228,7 @@ def install_windows_tasks(schedule: Schedule, *, prefix: str = "operator-recipe-
 
         task_name = f"{prefix}{recipe.name}"
         # Use ``py`` per Kruz's preference (3.14 has SDK).
-        cmd_str = f'py -m operator_core.cli run {recipe.name}'
+        cmd_str = f'py -m operator_core.cli recipe run {recipe.name}'
         argv = [
             schtasks, "/Create", "/F", "/TN", task_name,
             "/TR", cmd_str,

@@ -12,23 +12,138 @@
 
 version: 1
 recipes:
+  # --- daily briefings -------------------------------------------------------
   - name: morning_briefing
     cron: "0 6 * * *"
     enabled: true
-    notes: daily portfolio status
+    notes: daily portfolio status to projects
+  - name: briefing_midday
+    cron: "0 12 * * *"
+    enabled: true
+    notes: midday context refresh
+  - name: briefing_eod
+    cron: "0 18 * * *"
+    enabled: true
+    notes: end of day wrap
+  - name: sprint_report
+    cron: "0 17 * * *"
+    enabled: true
+    notes: STATUS.md heads digest
+
+  # --- code + repo ops -------------------------------------------------------
   - name: pr_reviewer
     cron: "10 6 * * *"
     enabled: true
     notes: open PR digest
+  - name: ci_triage
+    cron: "30 6 * * *"
+    enabled: true
+    notes: failed-CI autopatcher
+  - name: stale_branches
+    cron: "0 10 * * 1"
+    enabled: true
+    notes: weekly merged-branch sweeper
+  - name: dep_guardian
+    cron: "0 11 * * 1"
+    enabled: true
+    notes: weekly outdated-deps scan
+  - name: todo_hunter
+    cron: "0 12 * * 1"
+    enabled: true
+    notes: weekly TODO+FIXME aggregator
+  - name: feature_builder
+    cron: "0 13 * * 1"
+    enabled: true
+    notes: idea -> branch+PR scaffolder
+
+  # --- deploys + health ------------------------------------------------------
   - name: deploy_checker
     cron: "20 6 * * *"
     enabled: true
     notes: SaaS health probes
-  - name: outreach_pulse
-    cron: "30 6 * * *"
+  - name: client_health
+    cron: "40 6 * * *"
     enabled: true
-    notes: outreach pipeline pulse
+    notes: client project drift monitor
+  - name: project_snapshot
+    cron: "0 7 * * *"
+    enabled: true
+    notes: per-project STATUS+git capture
   - name: watchdog
     cron: "*/30 * * * *"
     enabled: true
     notes: status aggregate liveness
+  - name: status_rollup
+    cron: "*/15 * * * *"
+    enabled: true
+    notes: status-spec component aggregator
+
+  # --- outreach + revenue ----------------------------------------------------
+  - name: outreach_pulse
+    cron: "30 6 * * *"
+    enabled: true
+    notes: outreach pipeline pulse
+  - name: outreach_weekly
+    cron: "0 9 * * 1"
+    enabled: true
+    notes: weekly outreach roll-up
+  - name: revenue_cockpit
+    cron: "30 7 * * *"
+    enabled: true
+    notes: cross-portfolio next-action ranking
+  - name: hot_lead_dossier
+    cron: "*/15 * * * *"
+    enabled: true
+    notes: dossier-draft replied leads
+  - name: marketing_pulse
+    cron: "0 8 * * 1"
+    enabled: true
+    notes: BuildKit inbound metrics
+  - name: audit_intake
+    cron: "*/30 * * * *"
+    enabled: true
+    notes: AI Ops Tier-1 intake watcher
+
+  # --- ops + finance ---------------------------------------------------------
+  - name: pl_auditor
+    cron: "0 6 * * 1"
+    enabled: true
+    notes: AX02 PPTX number drift
+  - name: cost_tracker
+    cron: "0 8 * * *"
+    enabled: true
+    notes: daily token spend roll-up
+  - name: anthropic_spend_alarm
+    cron: "*/30 * * * *"
+    enabled: true
+    notes: alarm if daily Claude spend crosses threshold
+  - name: gmail_triage
+    cron: "*/15 * * * *"
+    enabled: true
+    notes: inbox lead vs noise classifier
+  - name: commitment_tracker
+    cron: "0 9 * * *"
+    enabled: true
+    notes: promised-deliverable tracker
+  - name: strategic_advisor
+    cron: "0 9 * * 1"
+    enabled: true
+    notes: weekly strategic decision prompt
+
+  # --- system safety ---------------------------------------------------------
+  - name: git_drift_audit
+    cron: "0 22 * * *"
+    enabled: true
+    notes: nightly uncommitted-work scanner
+  - name: secrets_audit
+    cron: "0 23 * * *"
+    enabled: true
+    notes: nightly secrets-file scan
+  - name: disk_pressure
+    cron: "0 */4 * * *"
+    enabled: true
+    notes: C: free-space alarm
+  - name: discord_health
+    cron: "0 7 * * 1"
+    enabled: true
+    notes: weekly webhook reachability probe

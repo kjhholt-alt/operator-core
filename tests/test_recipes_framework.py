@@ -301,6 +301,27 @@ class TestVerifyAll:
         assert not report.green
         assert any(name == "test_fail_verify" for name, _ in report.failures)
 
+    def test_verify_all_lenient_skips_unconfigured(self, monkeypatch):
+        """In lenient mode a recipe with unmet integration deps is skipped."""
+
+        class _NeedsSupabase(Recipe):
+            name = "test_needs_supabase"
+            version = "1.0.0"
+            requires_clients = ("supabase",)
+
+            async def verify(self, ctx):
+                return False  # would fail in strict mode
+
+        register_recipe(_NeedsSupabase)
+
+        # Make sure no SUPABASE_* env var bleeds through.
+        for var in ("SUPABASE_URL", "SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+        report = asyncio.run(verify_all(lenient=True))
+        assert any(name == "test_needs_supabase" for name, _ in report.skipped)
+        assert all(name != "test_needs_supabase" for name, _ in report.failures)
+
 
 # --- schedule tests ----------------------------------------------------------
 
@@ -335,6 +356,10 @@ class TestScheduleParser:
     def test_cron_to_schtasks_minute(self):
         out = cron_to_schtasks("*/15 * * * *")
         assert out == ["/SC", "MINUTE", "/MO", "15"]
+
+    def test_cron_to_schtasks_hourly_interval(self):
+        out = cron_to_schtasks("0 */4 * * *")
+        assert out == ["/SC", "HOURLY", "/MO", "4", "/ST", "00:00"]
 
     def test_cron_to_schtasks_weekly(self):
         out = cron_to_schtasks("0 9 * * 1-5")
@@ -465,3 +490,35 @@ class TestBundledRecipes:
         for cls in found:
             # `verify` must not be abstract.
             assert "verify" not in cls.__abstractmethods__, f"{cls.name}.verify still abstract"
+
+    def test_at_least_thirty_recipes_bundled(self):
+        """Acceptance: 30+ recipes shipped from operator-scripts migration."""
+        repo_root = Path(__file__).resolve().parent.parent
+        recipes_dir = repo_root / "recipes"
+        found = discover_recipes(recipes_dir)
+        assert len(found) >= 30, f"only {len(found)} recipes bundled; need >= 30"
+
+    def test_schedule_yaml_covers_every_bundled_recipe(self):
+        """Every recipe in recipes/ must appear in schedules/schedule.yaml."""
+        from operator_core.recipes.schedule import load_schedule
+
+        repo_root = Path(__file__).resolve().parent.parent
+        found = discover_recipes(repo_root / "recipes")
+        schedule = load_schedule(repo_root / "schedules" / "schedule.yaml")
+        scheduled_names = {r.name for r in schedule.recipes}
+        recipe_names = {c.name for c in found}
+        missing = recipe_names - scheduled_names
+        assert not missing, f"recipes missing from schedule.yaml: {sorted(missing)}"
+
+    def test_every_scheduled_cron_is_supported(self):
+        """schedule.yaml entries must all translate to schtasks args."""
+        from operator_core.recipes.schedule import cron_to_schtasks, load_schedule
+
+        repo_root = Path(__file__).resolve().parent.parent
+        schedule = load_schedule(repo_root / "schedules" / "schedule.yaml")
+        unsupported = [
+            (r.name, r.cron)
+            for r in schedule.recipes
+            if cron_to_schtasks(r.cron)[0] == "UNSUPPORTED"
+        ]
+        assert not unsupported, f"unsupported cron expressions: {unsupported}"
