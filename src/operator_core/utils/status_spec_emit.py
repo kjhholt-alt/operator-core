@@ -1,21 +1,20 @@
 """Emit a status-spec/v1 file alongside the legacy status.json.
 
-This module is a thin adapter. It reads the legacy v2 status dict
-produced by `utils.status` and translates it into a status-spec/v1
-document that the war-room dashboard (and any other reader) can
-consume without bespoke per-project parsing.
+Reads the legacy v2 status dict produced by `utils.status` and
+translates it into a status-spec/v1 document that the war-room dashboard
+(and any other reader) can consume without bespoke per-project parsing.
 
 We do not modify the legacy file. We write a sibling file at
 `<status_path>.parent / 'status-spec.json'` (default
 `~/.operator/data/status-spec.json`) atomically.
 
+When the real `status_spec` package is installed (via the
+`operator-core[specs]` extra), validation and atomic writing route
+through it. Otherwise the in-tree fallback validator + atomic writer
+keeps things working.
+
 Schema source:
     https://github.com/kjhholt-alt/status-spec - status-spec/v1
-
-We vendor a minimal validator here so this module has no extra
-dependency on the as-yet-unpublished `status-spec` Python package.
-Once that package ships, this module can `from status_spec import
-StatusBuilder, write_atomic` and drop the local copy.
 """
 from __future__ import annotations
 
@@ -34,6 +33,22 @@ _HEALTH_VALUES = ("green", "yellow", "red")
 _TS_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00:00)$"
 )
+
+_USING_REAL_LIB = False
+try:
+    from status_spec import write_atomic as _real_write_atomic  # type: ignore
+    from status_spec import validate as _real_validate  # type: ignore
+    from status_spec import StatusValidationError as _RealStatusValidationError  # type: ignore
+    _USING_REAL_LIB = True
+except ImportError:
+    _real_write_atomic = None
+    _real_validate = None
+    _RealStatusValidationError = None  # type: ignore
+
+
+def using_real_lib() -> bool:
+    """Diagnostic: True iff the real status-spec package is in use."""
+    return _USING_REAL_LIB
 
 
 def _utc_now() -> str:
@@ -192,20 +207,43 @@ def _atomic_write(path: Path, payload: str) -> None:
 
 
 def emit(legacy: dict[str, Any], target: Path) -> Path:
-    """Translate + atomically write a status-spec/v1 document."""
+    """Translate + atomically write a status-spec/v1 document.
+
+    When the real status-spec package is installed, validation runs
+    through its pydantic model and the write goes through its tested
+    atomic writer. Otherwise we use the in-tree fallback that ships
+    with operator-core.
+    """
     doc = translate(legacy)
-    errors = _validate_minimal(doc)
-    if errors:
-        # Don't crash the caller — emission is alongside the legacy
-        # write. Surface the issue, then write a synthetic red doc so
-        # consumers see something is wrong.
-        doc = {
-            "schema_version": SCHEMA_VERSION,
-            "project": PROJECT_NAME,
-            "ts": _utc_now(),
-            "health": "red",
-            "summary": ("status-spec emit failed: " + "; ".join(errors))[:280],
-        }
+
+    if _USING_REAL_LIB and _real_write_atomic is not None and _RealStatusValidationError is not None:
+        try:
+            _real_write_atomic(target, doc)
+            return target
+        except _RealStatusValidationError as exc:
+            # Fall through to the synthetic-red error doc below.
+            errors = [str(exc)]
+        except Exception:  # pragma: no cover - defensive
+            errors = ["unexpected real-lib write failure"]
+        else:
+            errors = []  # unreachable, but keeps mypy happy
+    else:
+        errors = _validate_minimal(doc)
+        if not errors:
+            payload = json.dumps(doc, indent=2, ensure_ascii=False)
+            _atomic_write(target, payload)
+            return target
+
+    # Validation or write failed. Don't crash the caller — emission is
+    # alongside the legacy write. Write a synthetic red doc so consumers
+    # see something is wrong.
+    doc = {
+        "schema_version": SCHEMA_VERSION,
+        "project": PROJECT_NAME,
+        "ts": _utc_now(),
+        "health": "red",
+        "summary": ("status-spec emit failed: " + "; ".join(errors))[:280],
+    }
     payload = json.dumps(doc, indent=2, ensure_ascii=False)
     _atomic_write(target, payload)
     return target
