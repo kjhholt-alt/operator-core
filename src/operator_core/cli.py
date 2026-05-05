@@ -812,17 +812,24 @@ def _cmd_recipe_verify(args: argparse.Namespace) -> int:
     from .recipes.verify import verify_all_sync
 
     _ensure_recipes_loaded()
-    report = verify_all_sync()
+    # If user passes --lenient, force on. Otherwise let verify_all read
+    # OPERATOR_VERIFY_DRY env on its own.
+    lenient_arg = True if args.lenient else None
+    report = verify_all_sync(lenient=lenient_arg)
     if args.json:
         print(_json.dumps({
             "total": report.total,
             "passed": report.passed,
             "failed": report.failed,
+            "skipped": report.skipped,
             "failures": report.failures,
             "green": report.green,
         }, indent=2))
         return 0 if report.green else 1
-    print(f"verify: {report.passed}/{report.total} passed")
+    skipped_n = len(report.skipped or [])
+    print(f"verify: {report.passed}/{report.total} passed, {skipped_n} skipped")
+    for name, err in (report.skipped or []):
+        print(f"  SKIP {name}: {err}")
     for name, err in report.failures:
         print(f"  FAIL {name}: {err}", file=sys.stderr)
     return 0 if report.green else 1
@@ -1094,6 +1101,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run verify() on every recipe; CI-friendly",
     )
     p_recipe_verify.add_argument("--json", action="store_true", help="Emit JSON")
+    p_recipe_verify.add_argument(
+        "--lenient",
+        action="store_true",
+        help="Treat unconfigured-integration verify() failures as SKIPPED (CI mode)",
+    )
     p_recipe_verify.set_defaults(func=_cmd_recipe_verify)
 
     # schedule (replaces run-*.bat hell)
