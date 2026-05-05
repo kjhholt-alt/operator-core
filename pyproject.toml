@@ -35,7 +35,14 @@ dependencies = [
 [project.optional-dependencies]
 discord = ["discord.py>=2.3"]
 status  = ["rich>=13.0"]
-specs   = ["status-spec>=1.0", "events-ndjson>=0.1"]
+# status-spec + events-ndjson are not yet on PyPI. Until they are, point
+# to the git roots (PEP 508 direct refs). Pip needs --no-build-isolation
+# disabled by default, but supports git URLs directly via VCS support.
+# Once the packages publish to PyPI, swap these for plain version specs.
+specs   = [
+    "status-spec @ git+https://github.com/kjhholt-alt/status-spec.git#subdirectory=writers/python",
+    "events-ndjson @ git+https://github.com/kjhholt-alt/events-ndjson.git#subdirectory=libraries/python",
+]
 dev     = ["pytest>=7.4", "pytest-asyncio>=0.21", "rich>=13.0"]
 
 [project.scripts]

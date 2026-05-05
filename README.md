@@ -27,6 +27,11 @@ pipx install operator-core
 pip install 'operator-core[specs,discord]'
 ```
 
+> **Note:** the `specs` extra installs `status-spec` and `events-ndjson`
+> directly from their git roots until they ship to PyPI. `pip` resolves
+> these via PEP 508 direct-reference URLs in `pyproject.toml`. Once the
+> packages publish, the URLs will be swapped for plain version specs.
+
 ### What `[specs]` gives you
 
 When `status-spec` and `events-ndjson` are installed, operator-core's
