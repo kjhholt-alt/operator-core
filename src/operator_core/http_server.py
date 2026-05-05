@@ -163,7 +163,9 @@ class OperatorRequestHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not_found"})
 
     def _dispatch_extra(self, method: str, body: dict[str, Any] | None) -> bool:
-        func = EXTRA_ROUTES.get((method, self.path))
+        # Strip query string -- routes are registered as bare paths.
+        path = self.path.split("?", 1)[0]
+        func = EXTRA_ROUTES.get((method, path))
         if func is None:
             return False
         try:

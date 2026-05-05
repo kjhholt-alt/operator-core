@@ -161,6 +161,12 @@ def render_ops_page(status: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
 
   <h1>OPERATOR <span class="accent">//</span> OPS</h1>
   <p class="muted">Local control surface. 127.0.0.1 only. Palantir-tier read-only.</p>
+  <p class="muted">
+    <a href="/ops">/ops</a> &middot;
+    <a href="/gate-review">/gate-review</a> &middot;
+    <a href="/metrics">/metrics</a> &middot;
+    <a href="/health">/health</a>
+  </p>
 
   {risk_banner}
 

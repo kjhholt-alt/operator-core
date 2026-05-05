@@ -223,6 +223,11 @@ class Daemon:
 
         register_remote_route(self.store)
         register_metrics_route(self.http, self.store)
+        try:
+            from .gate_review_routes import register_gate_review_routes
+            register_gate_review_routes()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("gate_review_routes registration failed: %s", exc)
         self._http_thread = threading.Thread(
             target=self.http.serve_forever,
             name="operator-http",
