@@ -25,7 +25,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import anthropic
+try:
+    import anthropic
+except ImportError:
+    anthropic = None  # Optional; module remains importable for tests/static use.
 
 from .pl_engine import (
     ACTIVE_FACTORIES,
@@ -476,6 +479,19 @@ def call_claude_analysis(request: AnalysisRequest) -> AnalysisResponse:
         )
 
     user_message = json.dumps(request.to_dict(), indent=2, default=str)
+
+    if anthropic is None:
+        return AnalysisResponse(
+            findings=[Finding(
+                category="environment",
+                detail="anthropic SDK not installed; install operator-core with the analyst extra.",
+                severity="critical",
+            )],
+            verdict=TrustVerdict.UNKNOWN,
+            human_input_required=True,
+            escalation_reason="anthropic SDK not installed",
+            summary="Analysis could not run. Install the `anthropic` package.",
+        )
 
     try:
         client = anthropic.Anthropic(api_key=api_key)

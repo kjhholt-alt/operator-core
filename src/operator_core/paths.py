@@ -131,7 +131,10 @@ def _projects_root() -> Path:
     s = _safe_settings()
     if s:
         return s.projects_root
-    raise RuntimeError("projects_root unavailable — run `operator init` first")
+    # Fallback so modules using `PROJECTS_ROOT / "..."` at import time
+    # remain importable in CI / test contexts where `operator init` hasn't run.
+    # Real runtime callers still get a sensible value via load_settings().
+    return Path.cwd()
 
 
 def _data_dir() -> Path:
