@@ -735,6 +735,31 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert data["quality_history"]["qa"]["all_pages"]["status"] == "pass"
             assert data["action_packets"]["summary"]["count"] == 0
             assert data["project_timeline"]["summary"]["counts_by_type"]["agent_checkpoint"] == 2
+            assert data["project_timeline"]["summary"]["actionable_count"] >= 1
+            assert data["project_timeline"]["action_queue"]
+
+            event_id = next(
+                event["id"]
+                for event in data["project_timeline"]["action_queue"]
+                if event["type"] == "pr_merged_no_review"
+            )
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({"event_id": event_id})
+            conn.request(
+                "POST",
+                "/cockpit/timeline/create-packet",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            from_event = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 201
+            event_packet_id = from_event["packet"]["id"]
+            assert from_event["packet"]["kind"] == "weekly_review_follow_up"
+            assert from_event["packet"]["status"] == "ready"
+            assert from_event["packet"]["context"]["source_event"]["id"] == event_id
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             payload = json.dumps({
@@ -775,10 +800,14 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             resp = conn.getresponse()
             data = json.loads(resp.read())
             conn.close()
-            assert data["action_packets"]["summary"]["count"] == 1
-            assert data["action_packets"]["summary"]["by_status"]["ready"] == 1
+            assert data["action_packets"]["summary"]["count"] == 2
+            assert data["action_packets"]["summary"]["by_status"]["ready"] == 2
             assert any(
                 event["type"] == "action_packet" and event["payload"]["packet_id"] == packet_id
+                for event in data["project_timeline"]["latest"]
+            )
+            assert any(
+                event["type"] == "action_packet" and event["payload"]["packet_id"] == event_packet_id
                 for event in data["project_timeline"]["latest"]
             )
         finally:

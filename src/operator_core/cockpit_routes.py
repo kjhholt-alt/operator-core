@@ -23,7 +23,13 @@ from .action_packets import (
     update_action_packet_status,
 )
 from .http_server import register_extra_route
-from .project_timeline import collect_project_timelines, project_timeline_dir
+from .project_timeline import (
+    collect_project_timelines,
+    event_packet_context,
+    find_timeline_event,
+    project_timeline_dir,
+    recommended_packet_kind,
+)
 from .war_room_agents import collect_agent_coordination
 from .war_room_autonomy import collect_autonomy_evidence
 from .war_room_memory import collect_memory_learning
@@ -575,6 +581,14 @@ def _timeline_rows(events: list[dict[str, Any]]) -> str:
     rows = []
     for event in events[:18]:
         severity = str(event.get("severity") or "low").lower()
+        action = ""
+        if event.get("actionable"):
+            action = (
+                f'<button class="timeline-packet" type="button" '
+                f'data-event-id="{_esc(event.get("id"))}" '
+                f'data-kind="{_esc(event.get("recommended_packet_kind"))}">'
+                f'{_esc(event.get("action_label") or "Create packet")}</button>'
+            )
         rows.append(
             "<tr>"
             f'<td><span class="health {severity}">{_esc(severity)}</span></td>'
@@ -582,9 +596,10 @@ def _timeline_rows(events: list[dict[str, Any]]) -> str:
             f'<td>{_esc(event.get("title"))}<div class="subtle">{_esc(event.get("summary"))}</div></td>'
             f'<td>{_esc(event.get("type"))}</td>'
             f'<td class="mono small">{_esc(event.get("ts"))}</td>'
+            f"<td>{action}</td>"
             "</tr>"
         )
-    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No project timeline events found.</td></tr>'
+    return "\n".join(rows) or '<tr><td colspan="6" class="empty">No project timeline events found.</td></tr>'
 
 
 def _timeline_project_rows(by_project: dict[str, Any]) -> str:
@@ -721,6 +736,7 @@ def render_cockpit(state: dict[str, Any]) -> str:
     project_timeline = state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {}
     timeline_summary = project_timeline.get("summary") if isinstance(project_timeline.get("summary"), dict) else {}
     timeline_latest = project_timeline.get("latest") if isinstance(project_timeline.get("latest"), list) else []
+    timeline_action_queue = project_timeline.get("action_queue") if isinstance(project_timeline.get("action_queue"), list) else []
     timeline_by_project = project_timeline.get("by_project") if isinstance(project_timeline.get("by_project"), dict) else {}
 
     return f"""<!doctype html>
@@ -776,6 +792,7 @@ def render_cockpit(state: dict[str, Any]) -> str:
       {_stat("Unconnected Sources", registry_summary.get("not_connected", 0), "warn" if registry_summary.get("not_connected", 0) else "")}
       {_stat("Action Packets", packet_summary.get("open_count", 0), "warn" if packet_summary.get("open_count", 0) else "")}
       {_stat("Timeline Risks", timeline_summary.get("risk_count", 0), "warn" if timeline_summary.get("risk_count", 0) else "")}
+      {_stat("Actionable Events", timeline_summary.get("actionable_count", 0), "warn" if timeline_summary.get("actionable_count", 0) else "")}
     </section>
 
     <section class="panel" id="actions">
@@ -812,11 +829,13 @@ def render_cockpit(state: dict[str, Any]) -> str:
         {_stat("Projects", timeline_summary.get("project_count", 0))}
         {_stat("Events", timeline_summary.get("event_count", 0))}
         {_stat("Risk Events", timeline_summary.get("risk_count", 0), "warn" if timeline_summary.get("risk_count", 0) else "")}
+        {_stat("Actionable", timeline_summary.get("actionable_count", 0), "warn" if timeline_summary.get("actionable_count", 0) else "")}
         {_stat("No-Review PRs", (timeline_summary.get("counts_by_type") or {}).get("pr_merged_no_review", 0) if isinstance(timeline_summary.get("counts_by_type"), dict) else 0, "warn")}
-        {_stat("Checkpoints", (timeline_summary.get("counts_by_type") or {}).get("agent_checkpoint", 0) if isinstance(timeline_summary.get("counts_by_type"), dict) else 0)}
       </div>
+      <div class="panel-subhead"><h3>Action Queue</h3><span>one-click local packet creation</span></div>
+      <table><thead><tr><th>Risk</th><th>Project</th><th>Event</th><th>Type</th><th>Time</th><th>Action</th></tr></thead><tbody>{_timeline_rows(timeline_action_queue)}</tbody></table>
       <div class="panel-subhead"><h3>Latest Events</h3><span>normalized local facts</span></div>
-      <table><thead><tr><th>Risk</th><th>Project</th><th>Event</th><th>Type</th><th>Time</th></tr></thead><tbody>{_timeline_rows(timeline_latest)}</tbody></table>
+      <table><thead><tr><th>Risk</th><th>Project</th><th>Event</th><th>Type</th><th>Time</th><th>Action</th></tr></thead><tbody>{_timeline_rows(timeline_latest)}</tbody></table>
       <div class="panel-subhead"><h3>Projects</h3><span>materialized JSONL snapshots</span></div>
       <table><thead><tr><th>Project</th><th class="right">Events</th><th class="right">Risk</th><th>Latest</th></tr></thead><tbody>{_timeline_project_rows(timeline_by_project)}</tbody></table>
     </section>
@@ -1137,6 +1156,35 @@ document.querySelectorAll('.packet-status').forEach(select => {{
   }});
   select.setAttribute('data-last-status', select.value);
 }});
+
+document.querySelectorAll('.timeline-packet').forEach(button => {{
+  button.addEventListener('click', async () => {{
+    const original = button.textContent;
+    button.textContent = 'creating...';
+    button.disabled = true;
+    try {{
+      const resp = await fetch('/cockpit/timeline/create-packet', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{
+          event_id: button.dataset.eventId,
+          kind: button.dataset.kind || '',
+        }}),
+      }});
+      const data = await resp.json();
+      if (!resp.ok) {{
+        button.textContent = data.detail || data.error || 'failed';
+        button.disabled = false;
+        return;
+      }}
+      button.textContent = 'created';
+      window.setTimeout(() => window.location.reload(), 500);
+    }} catch (e) {{
+      button.textContent = original || 'Create packet';
+      button.disabled = false;
+    }}
+  }});
+}});
 </script>
 </body>
 </html>"""
@@ -1180,10 +1228,36 @@ def register_cockpit_routes() -> None:
             return 400, {"error": "invalid_action_packet", "detail": str(exc)}
         return 200, {"ok": True, "packet": packet}
 
+    def _post_create_packet_from_timeline(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        body = body or {}
+        state = collect_cockpit_state()
+        event = find_timeline_event(
+            state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {},
+            str(body.get("event_id") or ""),
+        )
+        if event is None:
+            return 404, {"error": "timeline_event_not_found"}
+        kind = str(body.get("kind") or event.get("recommended_packet_kind") or recommended_packet_kind(event))
+        if not kind:
+            return 400, {"error": "timeline_event_not_actionable"}
+        title = str(body.get("title") or "").strip() or f"{event.get('project')}: {event.get('title')}"
+        try:
+            packet = create_action_packet(
+                kind=kind,
+                title=title,
+                context=event_packet_context(event, state=state),
+                packet_dir=action_packet_dir(_data_dir()),
+                status="ready",
+            )
+        except ValueError as exc:
+            return 400, {"error": "invalid_action_packet", "detail": str(exc)}
+        return 201, {"ok": True, "event": event, "packet": packet}
+
     register_extra_route("GET", "/cockpit", _get_cockpit)
     register_extra_route("GET", "/cockpit.json", _get_cockpit_json)
     register_extra_route("POST", "/cockpit/actions/create", _post_create_action_packet)
     register_extra_route("POST", "/cockpit/actions/status", _post_update_action_packet_status)
+    register_extra_route("POST", "/cockpit/timeline/create-packet", _post_create_packet_from_timeline)
 
 
 _CSS = """
@@ -1249,8 +1323,9 @@ p { margin: 4px 0 0; }
 .packet-form { display: grid; gap: 8px; }
 .packet-form select, .packet-form input, .packet-form textarea, .packet-status { width: 100%; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 8px; font: inherit; }
 .packet-form textarea { resize: vertical; min-height: 74px; }
-.packet-form button { width: fit-content; border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 8px 12px; cursor: pointer; }
-.packet-form button:hover { background: rgba(110, 168, 255, 0.26); }
+.packet-form button, .timeline-packet { width: fit-content; border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 8px 12px; cursor: pointer; }
+.packet-form button:hover, .timeline-packet:hover { background: rgba(110, 168, 255, 0.26); }
+.timeline-packet { white-space: nowrap; font-size: 12px; padding: 5px 8px; }
 .score-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .score-pill { display: inline-block; border: 1px solid rgba(110, 168, 255, 0.45); color: var(--accent); background: rgba(110, 168, 255, 0.08); padding: 4px 8px; font-size: 12px; }
 .resume-box { margin-top: 12px; border: 1px solid var(--line); background: var(--panel-2); padding: 10px; }

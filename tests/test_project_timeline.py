@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 
-from operator_core.project_timeline import collect_project_timelines, project_timeline_dir
+from operator_core.project_timeline import (
+    collect_project_timelines,
+    event_packet_context,
+    find_timeline_event,
+    project_timeline_dir,
+    recommended_packet_kind,
+)
 
 
 def test_project_timeline_normalizes_existing_cockpit_facts(tmp_path):
@@ -93,9 +99,19 @@ def test_project_timeline_normalizes_existing_cockpit_facts(tmp_path):
 
     assert result["summary"]["event_count"] >= 8
     assert result["summary"]["risk_count"] >= 4
+    assert result["summary"]["actionable_count"] >= 4
     assert result["summary"]["counts_by_type"]["pr_merged_no_review"] == 1
     assert "operator-core" in result["by_project"]
     assert any(event["type"] == "action_packet" for event in result["by_project"]["operator-core"])
+    pr_event = next(event for event in result["by_project"]["operator-core"] if event["type"] == "pr_merged_no_review")
+    assert pr_event["actionable"] is True
+    assert pr_event["recommended_packet_kind"] == "weekly_review_follow_up"
+    assert find_timeline_event(result, pr_event["id"]) == pr_event
+
+    context = event_packet_context(pr_event, state=state)
+    assert context["project"] == "operator-core"
+    assert context["source_event"]["id"] == pr_event["id"]
+    assert context["recommended_packet_kind"] == "weekly_review_follow_up"
 
     written = tmp_path / "timelines" / "operator-core.jsonl"
     assert written.exists()
@@ -108,3 +124,12 @@ def test_project_timeline_dir_honors_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("OPERATOR_PROJECT_TIMELINE_DIR", str(tmp_path / "custom"))
 
     assert project_timeline_dir(tmp_path) == tmp_path / "custom"
+
+
+def test_recommended_packet_kind_rules():
+    assert recommended_packet_kind({"type": "pr_merged_no_review", "severity": "low"}) == "weekly_review_follow_up"
+    assert recommended_packet_kind({"type": "source_gap", "severity": "low"}) == "source_action_work_order"
+    assert recommended_packet_kind({"type": "status_snapshot", "severity": "high"}) == "codex_implementation_packet"
+    assert recommended_packet_kind({"type": "cost_rollup", "severity": "warn"}) == "codex_implementation_packet"
+    assert recommended_packet_kind({"type": "agent_checkpoint", "severity": "warn"}) == "autonomy_checkpoint_draft"
+    assert recommended_packet_kind({"type": "action_packet", "severity": "warn"}) == ""

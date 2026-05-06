@@ -28,6 +28,64 @@ TIMELINE_EVENT_TYPES = (
 )
 
 
+def recommended_packet_kind(event: dict[str, Any]) -> str:
+    """Return the safest packet kind for a timeline event, or empty string."""
+
+    event_type = str(event.get("type") or "")
+    severity = str(event.get("severity") or "low")
+    if event_type == "pr_merged_no_review":
+        return "weekly_review_follow_up"
+    if event_type == "source_gap":
+        return "source_action_work_order"
+    if event_type == "agent_checkpoint" and severity in {"warn", "high"}:
+        return "autonomy_checkpoint_draft"
+    if event_type in {"status_snapshot", "cost_rollup", "motion_signal"} and severity in {"warn", "high"}:
+        return "codex_implementation_packet"
+    return ""
+
+
+def find_timeline_event(project_timeline: dict[str, Any], event_id: str) -> dict[str, Any] | None:
+    """Find an event by id in a collected project timeline payload."""
+
+    event_id = str(event_id or "")
+    for event in project_timeline.get("latest", []) if isinstance(project_timeline.get("latest"), list) else []:
+        if isinstance(event, dict) and event.get("id") == event_id:
+            return event
+    by_project = project_timeline.get("by_project") if isinstance(project_timeline.get("by_project"), dict) else {}
+    for events in by_project.values():
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if isinstance(event, dict) and event.get("id") == event_id:
+                return event
+    return None
+
+
+def event_packet_context(event: dict[str, Any], *, state: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Build Action Packet context from a timeline event."""
+
+    context = {
+        "summary": f"{event.get('title')}: {event.get('summary')}",
+        "project": event.get("project"),
+        "source_event": {
+            "id": event.get("id"),
+            "type": event.get("type"),
+            "severity": event.get("severity"),
+            "title": event.get("title"),
+            "summary": event.get("summary"),
+            "ts": event.get("ts"),
+            "source": event.get("source"),
+            "source_path": event.get("source_path"),
+            "payload": event.get("payload") if isinstance(event.get("payload"), dict) else {},
+        },
+        "recommended_packet_kind": event.get("recommended_packet_kind") or recommended_packet_kind(event),
+    }
+    if state and isinstance(state.get("paths"), dict):
+        context["war_room"] = state["paths"].get("war_room")
+        context["data_dir"] = state["paths"].get("data_dir")
+    return context
+
+
 def project_timeline_dir(data_dir: Path | None = None) -> Path:
     override = os.environ.get("OPERATOR_PROJECT_TIMELINE_DIR")
     if override:
@@ -74,11 +132,16 @@ def collect_project_timelines(
 
     counts_by_type: dict[str, int] = {}
     risk_count = 0
+    actionable_count = 0
     for event in events:
         event_type = str(event.get("type") or "unknown")
         counts_by_type[event_type] = counts_by_type.get(event_type, 0) + 1
         if event.get("severity") in {"warn", "high"}:
             risk_count += 1
+        if event.get("actionable"):
+            actionable_count += 1
+
+    action_queue = [event for event in latest if event.get("actionable")][:20]
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -87,10 +150,12 @@ def collect_project_timelines(
             "project_count": len(by_project),
             "event_count": sum(len(rows) for rows in by_project.values()),
             "risk_count": risk_count,
+            "actionable_count": actionable_count,
             "counts_by_type": counts_by_type,
         },
         "projects": sorted(by_project),
         "latest": latest,
+        "action_queue": action_queue,
         "by_project": by_project,
     }
 
@@ -379,6 +444,10 @@ def _event(
         "ts_sort": normalized_ts or ts or "",
     }
     event["id"] = _event_id(event)
+    packet_kind = recommended_packet_kind(event)
+    event["actionable"] = bool(packet_kind)
+    event["recommended_packet_kind"] = packet_kind
+    event["action_label"] = _action_label(packet_kind)
     return event
 
 
@@ -397,7 +466,6 @@ def _dedupe(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _event_id(event: dict[str, Any]) -> str:
     stable = {
         "project": event.get("project"),
-        "ts": event.get("ts"),
         "type": event.get("type"),
         "title": event.get("title"),
         "summary": event.get("summary"),
@@ -449,6 +517,16 @@ def _health_severity(health: str) -> str:
     if health in {"yellow", "warn", "warning", "unknown"}:
         return "warn"
     return "low"
+
+
+def _action_label(packet_kind: str) -> str:
+    labels = {
+        "weekly_review_follow_up": "Create review packet",
+        "source_action_work_order": "Create source work order",
+        "autonomy_checkpoint_draft": "Draft checkpoint",
+        "codex_implementation_packet": "Create implementation packet",
+    }
+    return labels.get(packet_kind, "")
 
 
 def _normalize_ts(value: str) -> str:
