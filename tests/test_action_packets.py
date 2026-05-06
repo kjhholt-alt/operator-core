@@ -9,8 +9,12 @@ from operator_core.action_packets import (
     action_packet_dir,
     action_packet_kinds,
     action_packet_summary,
+    claim_action_packet,
+    complete_action_packet,
     create_action_packet,
+    find_packet_by_source_event,
     list_action_packets,
+    read_action_packet_audit,
     update_action_packet_status,
 )
 
@@ -32,6 +36,7 @@ def test_create_action_packet_writes_markdown_and_json(tmp_path):
     metadata = json.loads(json_path.read_text(encoding="utf-8"))
     body = md_path.read_text(encoding="utf-8")
     assert metadata["status"] == "draft"
+    assert metadata["status_history"][0]["to"] == "draft"
     assert metadata["safety"]["external_apis"] is False
     assert "## Stop Rules" in body
     assert "No sends, deletes" not in body
@@ -59,13 +64,40 @@ def test_update_action_packet_status_rewrites_metadata_and_markdown(tmp_path):
     packet_dir = tmp_path / "packets"
     packet = create_action_packet(kind="claude_audit_packet", packet_dir=packet_dir)
 
-    updated = update_action_packet_status(packet["id"], "claimed", packet_dir)
+    updated = update_action_packet_status(packet["id"], "claimed", packet_dir, actor="codex", note="taking it")
 
     assert updated["status"] == "claimed"
+    assert updated["claimed_by"] == "codex"
     metadata = json.loads((packet_dir / f"{packet['id']}.json").read_text(encoding="utf-8"))
     markdown = (packet_dir / f"{packet['id']}.md").read_text(encoding="utf-8")
     assert metadata["status"] == "claimed"
+    assert metadata["status_history"][-1]["note"] == "taking it"
     assert "- Status: `claimed`" in markdown
+    audit = read_action_packet_audit(packet_dir)
+    assert [row["action"] for row in audit] == ["created", "status_changed"]
+
+
+def test_claim_complete_and_find_by_source_event(tmp_path):
+    packet_dir = tmp_path / "packets"
+    packet = create_action_packet(
+        kind="weekly_review_follow_up",
+        context={"source_event": {"id": "event-1"}, "project": "operator-core"},
+        packet_dir=packet_dir,
+        status="ready",
+    )
+
+    found = find_packet_by_source_event(packet_dir, "event-1")
+    assert found is not None
+    assert found["id"] == packet["id"]
+
+    claimed = claim_action_packet(packet["id"], packet_dir, actor="claude", note="auditing")
+    done = complete_action_packet(packet["id"], packet_dir, actor="claude", note="checked")
+
+    assert claimed["status"] == "claimed"
+    assert done["status"] == "done"
+    assert done["done_at"]
+    assert find_packet_by_source_event(packet_dir, "event-1") is None
+    assert find_packet_by_source_event(packet_dir, "event-1", include_done=True)["id"] == packet["id"]
 
 
 def test_action_packets_reject_unknown_kind_and_status(tmp_path):

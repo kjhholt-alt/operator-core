@@ -12,14 +12,19 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, quote, urlparse
 
 from .action_packets import (
     PACKET_STATUSES,
     action_packet_dir,
     action_packet_kinds,
     action_packet_summary,
+    claim_action_packet,
+    complete_action_packet,
     create_action_packet,
+    find_packet_by_source_event,
     list_action_packets,
+    read_action_packet_audit,
     update_action_packet_status,
 )
 from .http_server import register_extra_route
@@ -216,6 +221,7 @@ def collect_cockpit_state() -> dict[str, Any]:
             "dir": str(packets_dir),
             "kinds": action_packet_kinds(),
             "statuses": list(PACKET_STATUSES),
+            "audit": read_action_packet_audit(packets_dir, limit=50),
             "summary": action_packet_summary(action_packets),
             "items": action_packets,
         },
@@ -570,11 +576,29 @@ def _packet_rows(packets: list[dict[str, Any]], statuses: list[str]) -> str:
             f'<td>{_esc(packet.get("title"))}<div class="subtle mono">{_esc(packet.get("id"))}</div></td>'
             f'<td>{_esc(packet.get("kind_label") or packet.get("kind"))}</td>'
             f'<td><select class="packet-status" data-packet-id="{_esc(packet.get("id"))}">{options}</select></td>'
+            f'<td>{_esc(packet.get("claimed_by") or "")}</td>'
             f'<td class="mono small">{_esc(packet.get("updated_at"))}</td>'
             f'<td class="mono small">{_esc(paths.get("markdown"))}</td>'
+            f'<td><button class="packet-claim" type="button" data-packet-id="{_esc(packet.get("id"))}">Claim</button> '
+            f'<button class="packet-done" type="button" data-packet-id="{_esc(packet.get("id"))}">Done</button></td>'
             "</tr>"
         )
-    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No action packets created yet.</td></tr>'
+    return "\n".join(rows) or '<tr><td colspan="7" class="empty">No action packets created yet.</td></tr>'
+
+
+def _packet_audit_rows(rows_in: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in reversed(rows_in[-12:]):
+        rows.append(
+            "<tr>"
+            f'<td class="mono small">{_esc(item.get("ts"))}</td>'
+            f'<td>{_esc(item.get("action"))}</td>'
+            f'<td class="mono">{_esc(item.get("packet_id"))}</td>'
+            f'<td>{_esc(item.get("actor"))}</td>'
+            f'<td>{_esc(item.get("note"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No packet audit events yet.</td></tr>'
 
 
 def _timeline_rows(events: list[dict[str, Any]]) -> str:
@@ -611,13 +635,117 @@ def _timeline_project_rows(by_project: dict[str, Any]) -> str:
         latest = events[0] if events and isinstance(events[0], dict) else {}
         rows.append(
             "<tr>"
-            f'<td>{_esc(project)}</td>'
+            f'<td><a class="inline-link" href="/cockpit/project?project={quote(str(project))}">{_esc(project)}</a></td>'
             f'<td class="right mono">{len(events)}</td>'
             f'<td class="right mono">{risky}</td>'
             f'<td>{_esc(latest.get("title"))}<div class="subtle">{_esc(latest.get("summary"))}</div></td>'
             "</tr>"
         )
     return "\n".join(rows) or '<tr><td colspan="4" class="empty">No project timelines materialized.</td></tr>'
+
+
+def _project_packet_rows(packets: list[dict[str, Any]]) -> str:
+    rows = []
+    for packet in packets[:30]:
+        source_event = {}
+        context = packet.get("context") if isinstance(packet.get("context"), dict) else {}
+        if isinstance(context.get("source_event"), dict):
+            source_event = context["source_event"]
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(packet.get("title"))}<div class="subtle mono">{_esc(packet.get("id"))}</div></td>'
+            f'<td>{_esc(packet.get("status"))}</td>'
+            f'<td>{_esc(packet.get("kind"))}</td>'
+            f'<td>{_esc(packet.get("claimed_by") or "")}</td>'
+            f'<td>{_esc(source_event.get("type") or "")}</td>'
+            f'<td class="mono small">{_esc(packet.get("updated_at"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="6" class="empty">No packets linked to this project.</td></tr>'
+
+
+def _project_payload(state: dict[str, Any], project: str) -> dict[str, Any]:
+    project = project.strip() or "operator-core"
+    timeline = state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {}
+    by_project = timeline.get("by_project") if isinstance(timeline.get("by_project"), dict) else {}
+    events = by_project.get(project, []) if isinstance(by_project.get(project), list) else []
+    packets_root = state.get("action_packets") if isinstance(state.get("action_packets"), dict) else {}
+    packets = []
+    for packet in packets_root.get("items", []) if isinstance(packets_root.get("items"), list) else []:
+        if not isinstance(packet, dict):
+            continue
+        context = packet.get("context") if isinstance(packet.get("context"), dict) else {}
+        source_event = context.get("source_event") if isinstance(context.get("source_event"), dict) else {}
+        if context.get("project") == project or source_event.get("project") == project or any(event.get("id") == source_event.get("id") for event in events if isinstance(event, dict)):
+            packets.append(packet)
+    risky = [event for event in events if isinstance(event, dict) and event.get("severity") in {"warn", "high"}]
+    return {
+        "project": project,
+        "generated_at": state.get("generated_at"),
+        "summary": {
+            "event_count": len(events),
+            "risk_count": len(risky),
+            "packet_count": len(packets),
+            "actionable_count": sum(1 for event in events if isinstance(event, dict) and event.get("actionable")),
+        },
+        "events": events,
+        "packets": packets,
+    }
+
+
+def render_project_timeline(payload: dict[str, Any]) -> str:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    events = payload.get("events") if isinstance(payload.get("events"), list) else []
+    packets = payload.get("packets") if isinstance(payload.get("packets"), list) else []
+    project = str(payload.get("project") or "")
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_esc(project)} Timeline</title>
+<style>{_CSS}</style>
+</head>
+<body>
+<main>
+  <header class="topbar">
+    <div>
+      <h1>{_esc(project)} Timeline</h1>
+      <p class="muted mono">Generated {_esc(payload.get("generated_at"))}</p>
+    </div>
+    <div class="links"><a href="/cockpit">Cockpit</a><a href="/cockpit.json">JSON</a></div>
+  </header>
+  <section class="metrics compact">
+    {_stat("Events", summary.get("event_count", 0))}
+    {_stat("Risk", summary.get("risk_count", 0), "warn" if summary.get("risk_count", 0) else "")}
+    {_stat("Actionable", summary.get("actionable_count", 0), "warn" if summary.get("actionable_count", 0) else "")}
+    {_stat("Packets", summary.get("packet_count", 0))}
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Events</h2><span>{len(events)} local facts</span></div>
+    <table><thead><tr><th>Risk</th><th>Project</th><th>Event</th><th>Type</th><th>Time</th><th>Action</th></tr></thead><tbody>{_timeline_rows(events)}</tbody></table>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Linked Packets</h2><span>{len(packets)} packets</span></div>
+    <table><thead><tr><th>Packet</th><th>Status</th><th>Kind</th><th>Owner</th><th>Source Event</th><th>Updated</th></tr></thead><tbody>{_project_packet_rows(packets)}</tbody></table>
+  </section>
+</main>
+<script>
+document.querySelectorAll('.timeline-packet').forEach(button => {{
+  button.addEventListener('click', async () => {{
+    button.textContent = 'creating...';
+    button.disabled = true;
+    const resp = await fetch('/cockpit/timeline/create-packet', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{event_id: button.dataset.eventId, kind: button.dataset.kind || ''}}),
+    }});
+    if (resp.ok) window.setTimeout(() => window.location.reload(), 400);
+  }});
+}});
+</script>
+</body>
+</html>"""
 
 
 def _packet_context_for(kind: str, state: dict[str, Any], extra_summary: str = "") -> dict[str, Any]:
@@ -732,6 +860,7 @@ def render_cockpit(state: dict[str, Any]) -> str:
     packet_status_counts = packet_summary.get("by_status") if isinstance(packet_summary.get("by_status"), dict) else {}
     packet_items = action_packets.get("items") if isinstance(action_packets.get("items"), list) else []
     packet_kinds = action_packets.get("kinds") if isinstance(action_packets.get("kinds"), list) else []
+    packet_audit = action_packets.get("audit") if isinstance(action_packets.get("audit"), list) else []
     packet_statuses = action_packets.get("statuses") if isinstance(action_packets.get("statuses"), list) else list(PACKET_STATUSES)
     project_timeline = state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {}
     timeline_summary = project_timeline.get("summary") if isinstance(project_timeline.get("summary"), dict) else {}
@@ -820,7 +949,9 @@ def render_cockpit(state: dict[str, Any]) -> str:
         </div>
       </div>
       <div class="panel-subhead"><h3>Latest Packets</h3><span>{packet_summary.get("count", 0)} total</span></div>
-      <table><thead><tr><th>Packet</th><th>Kind</th><th>Status</th><th>Updated</th><th>Markdown</th></tr></thead><tbody>{_packet_rows(packet_items, [str(s) for s in packet_statuses])}</tbody></table>
+      <table><thead><tr><th>Packet</th><th>Kind</th><th>Status</th><th>Owner</th><th>Updated</th><th>Markdown</th><th>Controls</th></tr></thead><tbody>{_packet_rows(packet_items, [str(s) for s in packet_statuses])}</tbody></table>
+      <div class="panel-subhead"><h3>Packet Audit</h3><span>{len(packet_audit)} recent lifecycle events</span></div>
+      <table><thead><tr><th>Time</th><th>Action</th><th>Packet</th><th>Actor</th><th>Note</th></tr></thead><tbody>{_packet_audit_rows(packet_audit)}</tbody></table>
     </section>
 
     <section class="panel" id="timeline">
@@ -1157,6 +1288,45 @@ document.querySelectorAll('.packet-status').forEach(select => {{
   select.setAttribute('data-last-status', select.value);
 }});
 
+async function updatePacketLifecycle(packetId, status, note) {{
+  const resp = await fetch('/cockpit/actions/status', {{
+    method: 'POST',
+    headers: {{'Content-Type': 'application/json'}},
+    body: JSON.stringify({{id: packetId, status: status, actor: 'cockpit', note: note || ''}}),
+  }});
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.detail || data.error || 'packet update failed');
+  return data;
+}}
+
+document.querySelectorAll('.packet-claim').forEach(button => {{
+  button.addEventListener('click', async () => {{
+    button.textContent = 'claiming...';
+    button.disabled = true;
+    try {{
+      await updatePacketLifecycle(button.dataset.packetId, 'claimed', 'claimed from cockpit');
+      window.setTimeout(() => window.location.reload(), 400);
+    }} catch (e) {{
+      button.textContent = 'Claim';
+      button.disabled = false;
+    }}
+  }});
+}});
+
+document.querySelectorAll('.packet-done').forEach(button => {{
+  button.addEventListener('click', async () => {{
+    button.textContent = 'closing...';
+    button.disabled = true;
+    try {{
+      await updatePacketLifecycle(button.dataset.packetId, 'done', 'marked done from cockpit');
+      window.setTimeout(() => window.location.reload(), 400);
+    }} catch (e) {{
+      button.textContent = 'Done';
+      button.disabled = false;
+    }}
+  }});
+}});
+
 document.querySelectorAll('.timeline-packet').forEach(button => {{
   button.addEventListener('click', async () => {{
     const original = button.textContent;
@@ -1197,6 +1367,16 @@ def register_cockpit_routes() -> None:
     def _get_cockpit_json(handler: Any, body: Any) -> tuple[int, dict[str, Any]]:
         return 200, collect_cockpit_state()
 
+    def _get_project_timeline(handler: Any, body: Any) -> tuple[int, str]:
+        params = parse_qs(urlparse(handler.path).query)
+        project = str((params.get("project") or ["operator-core"])[0])
+        return 200, render_project_timeline(_project_payload(collect_cockpit_state(), project))
+
+    def _get_project_timeline_json(handler: Any, body: Any) -> tuple[int, dict[str, Any]]:
+        params = parse_qs(urlparse(handler.path).query)
+        project = str((params.get("project") or ["operator-core"])[0])
+        return 200, _project_payload(collect_cockpit_state(), project)
+
     def _post_create_action_packet(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         body = body or {}
         kind = str(body.get("kind") or "")
@@ -1216,12 +1396,22 @@ def register_cockpit_routes() -> None:
 
     def _post_update_action_packet_status(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         body = body or {}
+        status = str(body.get("status") or "")
+        actor = str(body.get("actor") or "cockpit")
+        note = str(body.get("note") or "")
         try:
-            packet = update_action_packet_status(
-                packet_id=str(body.get("id") or ""),
-                status=str(body.get("status") or ""),
-                packet_dir=action_packet_dir(_data_dir()),
-            )
+            if status == "claimed":
+                packet = claim_action_packet(str(body.get("id") or ""), action_packet_dir(_data_dir()), actor=actor, note=note)
+            elif status == "done":
+                packet = complete_action_packet(str(body.get("id") or ""), action_packet_dir(_data_dir()), actor=actor, note=note)
+            else:
+                packet = update_action_packet_status(
+                    packet_id=str(body.get("id") or ""),
+                    status=status,
+                    packet_dir=action_packet_dir(_data_dir()),
+                    actor=actor,
+                    note=note,
+                )
         except FileNotFoundError:
             return 404, {"error": "packet_not_found"}
         except ValueError as exc:
@@ -1240,6 +1430,9 @@ def register_cockpit_routes() -> None:
         kind = str(body.get("kind") or event.get("recommended_packet_kind") or recommended_packet_kind(event))
         if not kind:
             return 400, {"error": "timeline_event_not_actionable"}
+        existing = find_packet_by_source_event(action_packet_dir(_data_dir()), str(event.get("id") or ""))
+        if existing is not None:
+            return 200, {"ok": True, "deduped": True, "event": event, "packet": existing}
         title = str(body.get("title") or "").strip() or f"{event.get('project')}: {event.get('title')}"
         try:
             packet = create_action_packet(
@@ -1255,6 +1448,8 @@ def register_cockpit_routes() -> None:
 
     register_extra_route("GET", "/cockpit", _get_cockpit)
     register_extra_route("GET", "/cockpit.json", _get_cockpit_json)
+    register_extra_route("GET", "/cockpit/project", _get_project_timeline)
+    register_extra_route("GET", "/cockpit/project.json", _get_project_timeline_json)
     register_extra_route("POST", "/cockpit/actions/create", _post_create_action_packet)
     register_extra_route("POST", "/cockpit/actions/status", _post_update_action_packet_status)
     register_extra_route("POST", "/cockpit/timeline/create-packet", _post_create_packet_from_timeline)
@@ -1323,9 +1518,11 @@ p { margin: 4px 0 0; }
 .packet-form { display: grid; gap: 8px; }
 .packet-form select, .packet-form input, .packet-form textarea, .packet-status { width: 100%; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 8px; font: inherit; }
 .packet-form textarea { resize: vertical; min-height: 74px; }
-.packet-form button, .timeline-packet { width: fit-content; border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 8px 12px; cursor: pointer; }
-.packet-form button:hover, .timeline-packet:hover { background: rgba(110, 168, 255, 0.26); }
-.timeline-packet { white-space: nowrap; font-size: 12px; padding: 5px 8px; }
+.packet-form button, .timeline-packet, .packet-claim, .packet-done { width: fit-content; border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 8px 12px; cursor: pointer; }
+.packet-form button:hover, .timeline-packet:hover, .packet-claim:hover, .packet-done:hover { background: rgba(110, 168, 255, 0.26); }
+.timeline-packet, .packet-claim, .packet-done { white-space: nowrap; font-size: 12px; padding: 5px 8px; margin: 1px; }
+.inline-link { color: var(--accent); text-decoration: none; }
+.inline-link:hover { text-decoration: underline; }
 .score-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .score-pill { display: inline-block; border: 1px solid rgba(110, 168, 255, 0.45); color: var(--accent); background: rgba(110, 168, 255, 0.08); padding: 4px 8px; font-size: 12px; }
 .resume-box { margin-top: 12px; border: 1px solid var(--line); background: var(--panel-2); padding: 10px; }

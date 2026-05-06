@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -183,6 +184,29 @@ def list_action_packets(packet_dir: Path, *, limit: int = 50) -> list[dict[str, 
     return packets[:limit]
 
 
+def action_packet_audit_path(packet_dir: Path) -> Path:
+    return packet_dir / "action-packet-audit.jsonl"
+
+
+def read_action_packet_audit(packet_dir: Path, *, limit: int = 100) -> list[dict[str, Any]]:
+    path = action_packet_audit_path(packet_dir)
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows[-limit:]
+
+
 def action_packet_summary(packets: list[dict[str, Any]]) -> dict[str, Any]:
     by_status = {status: 0 for status in PACKET_STATUSES}
     for packet in packets:
@@ -193,6 +217,25 @@ def action_packet_summary(packets: list[dict[str, Any]]) -> dict[str, Any]:
         "by_status": by_status,
         "open_count": by_status["draft"] + by_status["ready"] + by_status["claimed"],
     }
+
+
+def find_packet_by_source_event(
+    packet_dir: Path,
+    source_event_id: str,
+    *,
+    include_done: bool = False,
+) -> dict[str, Any] | None:
+    source_event_id = str(source_event_id or "")
+    if not source_event_id:
+        return None
+    for packet in list_action_packets(packet_dir, limit=500):
+        if not include_done and packet.get("status") == "done":
+            continue
+        context = packet.get("context") if isinstance(packet.get("context"), dict) else {}
+        source_event = context.get("source_event") if isinstance(context.get("source_event"), dict) else {}
+        if source_event.get("id") == source_event_id:
+            return packet
+    return None
 
 
 def create_action_packet(
@@ -207,6 +250,7 @@ def create_action_packet(
     status = _require_status(status)
     now = _now()
     packet_id = _new_packet_id(template.id, title or template.label, now)
+    actor = "cockpit"
     packet = {
         "id": packet_id,
         "kind": template.id,
@@ -215,7 +259,17 @@ def create_action_packet(
         "status": status,
         "created_at": now,
         "updated_at": now,
+        "claimed_by": "",
+        "claimed_at": "",
+        "done_at": "",
         "context": context or {},
+        "status_history": [{
+            "ts": now,
+            "from": "",
+            "to": status,
+            "actor": actor,
+            "note": "created",
+        }],
         "safety": {
             "local_files_only": True,
             "external_apis": False,
@@ -227,10 +281,19 @@ def create_action_packet(
         "verification": list(template.verification),
         "paths": {},
     }
-    return _write_packet(packet, packet_dir)
+    packet = _write_packet(packet, packet_dir)
+    _append_audit(packet_dir, packet, "created", actor=actor, note="")
+    return packet
 
 
-def update_action_packet_status(packet_id: str, status: str, packet_dir: Path) -> dict[str, Any]:
+def update_action_packet_status(
+    packet_id: str,
+    status: str,
+    packet_dir: Path,
+    *,
+    actor: str = "cockpit",
+    note: str = "",
+) -> dict[str, Any]:
     packet_id = _clean_packet_id(packet_id)
     status = _require_status(status)
     path = packet_dir / f"{packet_id}.json"
@@ -239,9 +302,35 @@ def update_action_packet_status(packet_id: str, status: str, packet_dir: Path) -
     packet = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(packet, dict):
         raise ValueError("packet metadata is not an object")
+    old_status = str(packet.get("status") or "")
+    now = _now()
     packet["status"] = status
-    packet["updated_at"] = _now()
-    return _write_packet(packet, packet_dir)
+    packet["updated_at"] = now
+    if status == "claimed":
+        packet["claimed_by"] = actor or packet.get("claimed_by") or "cockpit"
+        packet["claimed_at"] = packet.get("claimed_at") or now
+    if status == "done":
+        packet["done_at"] = packet.get("done_at") or now
+    history = packet.get("status_history") if isinstance(packet.get("status_history"), list) else []
+    history.append({
+        "ts": now,
+        "from": old_status,
+        "to": status,
+        "actor": actor,
+        "note": note,
+    })
+    packet["status_history"] = history[-50:]
+    packet = _write_packet(packet, packet_dir)
+    _append_audit(packet_dir, packet, "status_changed", actor=actor, note=note, extra={"from": old_status, "to": status})
+    return packet
+
+
+def claim_action_packet(packet_id: str, packet_dir: Path, *, actor: str, note: str = "") -> dict[str, Any]:
+    return update_action_packet_status(packet_id, "claimed", packet_dir, actor=actor or "cockpit", note=note)
+
+
+def complete_action_packet(packet_id: str, packet_dir: Path, *, actor: str = "cockpit", note: str = "") -> dict[str, Any]:
+    return update_action_packet_status(packet_id, "done", packet_dir, actor=actor or "cockpit", note=note)
 
 
 def _write_packet(packet: dict[str, Any], packet_dir: Path) -> dict[str, Any]:
@@ -270,6 +359,9 @@ def _render_markdown(packet: dict[str, Any]) -> str:
         f"- Status: `{packet.get('status')}`",
         f"- Created: `{packet.get('created_at')}`",
         f"- Updated: `{packet.get('updated_at')}`",
+        f"- Claimed by: `{packet.get('claimed_by') or ''}`",
+        f"- Claimed at: `{packet.get('claimed_at') or ''}`",
+        f"- Done at: `{packet.get('done_at') or ''}`",
         "",
         "## Goal",
         "",
@@ -297,10 +389,14 @@ def _render_markdown(packet: dict[str, Any]) -> str:
         "",
         "## Handoff",
         "",
-        "- Owner:",
-        "- Claimed at:",
+        f"- Owner: {packet.get('claimed_by') or ''}",
+        f"- Claimed at: {packet.get('claimed_at') or ''}",
         "- Result:",
         "- Follow-up:",
+        "",
+        "## Status History",
+        "",
+        *_history_lines(packet.get("status_history")),
         "",
     ]
     return "\n".join(sections)
@@ -313,8 +409,55 @@ def _bullet_lines(items: Any) -> list[str]:
     return rows or ["- None recorded."]
 
 
+def _history_lines(items: Any) -> list[str]:
+    if not isinstance(items, list):
+        return ["- None recorded."]
+    rows = []
+    for item in items[-20:]:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            f"- {item.get('ts')}: `{item.get('from') or 'new'}` -> `{item.get('to')}`"
+            f" by {item.get('actor') or 'unknown'}"
+            f"{' - ' + str(item.get('note')) if item.get('note') else ''}"
+        )
+    return rows or ["- None recorded."]
+
+
+def _append_audit(
+    packet_dir: Path,
+    packet: dict[str, Any],
+    action: str,
+    *,
+    actor: str,
+    note: str,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "ts": _now(),
+        "action": action,
+        "packet_id": packet.get("id"),
+        "kind": packet.get("kind"),
+        "status": packet.get("status"),
+        "actor": actor,
+        "note": note,
+        "source_event_id": _source_event_id(packet),
+        "extra": extra or {},
+    }
+    path = action_packet_audit_path(packet_dir)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+
+
+def _source_event_id(packet: dict[str, Any]) -> str:
+    context = packet.get("context") if isinstance(packet.get("context"), dict) else {}
+    source_event = context.get("source_event") if isinstance(context.get("source_event"), dict) else {}
+    return str(source_event.get("id") or "")
+
+
 def _atomic_write_text(path: Path, body: str) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(body, encoding="utf-8")
     tmp.replace(path)
 

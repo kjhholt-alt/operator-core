@@ -10,6 +10,8 @@ import hashlib
 import json
 import os
 import re
+import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,8 @@ TIMELINE_EVENT_TYPES = (
     "decision",
     "motion_signal",
 )
+
+_TIMELINE_WRITE_LOCK = threading.Lock()
 
 
 def recommended_packet_kind(event: dict[str, Any]) -> str:
@@ -128,7 +132,8 @@ def collect_project_timelines(
 
     out_dir = output_dir or project_timeline_dir()
     if write:
-        write_project_timeline_snapshots(by_project, out_dir)
+        with _TIMELINE_WRITE_LOCK:
+            write_project_timeline_snapshots(by_project, out_dir)
 
     counts_by_type: dict[str, int] = {}
     risk_count = 0
@@ -564,6 +569,6 @@ def _float(value: Any) -> float:
 
 
 def _atomic_write_text(path: Path, body: str) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     tmp.write_text(body, encoding="utf-8")
     tmp.replace(path)

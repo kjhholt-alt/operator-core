@@ -716,7 +716,9 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert "Keep migration local and testable" in html
             assert "Action Packets" in html
             assert "Create Local Packet" in html
+            assert "Packet Audit" in html
             assert "Project Timeline" in html
+            assert "Action Queue" in html
             assert "agent_checkpoint" in html
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -762,6 +764,21 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert from_event["packet"]["context"]["source_event"]["id"] == event_id
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({"event_id": event_id})
+            conn.request(
+                "POST",
+                "/cockpit/timeline/create-packet",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            duplicate = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 200
+            assert duplicate["deduped"] is True
+            assert duplicate["packet"]["id"] == event_packet_id
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             payload = json.dumps({
                 "kind": "weekly_review_follow_up",
                 "title": "Review autonomous merges",
@@ -796,12 +813,44 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert updated["packet"]["status"] == "ready"
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({"id": packet_id, "status": "claimed", "actor": "codex", "note": "route test claim"})
+            conn.request(
+                "POST",
+                "/cockpit/actions/status",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            claimed = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 200
+            assert claimed["packet"]["status"] == "claimed"
+            assert claimed["packet"]["claimed_by"] == "codex"
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({"id": packet_id, "status": "done", "actor": "codex", "note": "route test done"})
+            conn.request(
+                "POST",
+                "/cockpit/actions/status",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            done = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 200
+            assert done["packet"]["status"] == "done"
+            assert done["packet"]["done_at"]
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             conn.request("GET", "/cockpit.json")
             resp = conn.getresponse()
             data = json.loads(resp.read())
             conn.close()
             assert data["action_packets"]["summary"]["count"] == 2
-            assert data["action_packets"]["summary"]["by_status"]["ready"] == 2
+            assert data["action_packets"]["summary"]["by_status"]["ready"] == 1
+            assert data["action_packets"]["summary"]["by_status"]["done"] == 1
+            assert len(data["action_packets"]["audit"]) >= 5
             assert any(
                 event["type"] == "action_packet" and event["payload"]["packet_id"] == packet_id
                 for event in data["project_timeline"]["latest"]
@@ -810,6 +859,25 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
                 event["type"] == "action_packet" and event["payload"]["packet_id"] == event_packet_id
                 for event in data["project_timeline"]["latest"]
             )
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/cockpit/project?project=operator-core")
+            resp = conn.getresponse()
+            project_html = resp.read().decode("utf-8")
+            conn.close()
+            assert resp.status == 200
+            assert "operator-core Timeline" in project_html
+            assert "Linked Packets" in project_html
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/cockpit/project.json?project=operator-core")
+            resp = conn.getresponse()
+            project_data = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 200
+            assert project_data["project"] == "operator-core"
+            assert project_data["summary"]["event_count"] >= 1
+            assert any(packet["id"] == event_packet_id for packet in project_data["packets"])
         finally:
             server.shutdown()
             server.server_close()
