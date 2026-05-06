@@ -66,6 +66,10 @@ operator run                     # starts the daemon
 ## What it does
 
 - **Scheduled agents** — recipes fire on cron, results post to Discord
+  (see `schedules/schedule.yaml` for the full list; `operator schedule
+  install` registers them with `schtasks`/`launchctl`/`systemd-timer`).
+  Setup walkthrough for the daily briefing is in
+  [`docs/MORNING_BRIEFING_SETUP.md`](docs/MORNING_BRIEFING_SETUP.md).
 - **Watchdog** — flags stale status sections (jobs that should have run but didn't)
 - **Portfolio brain** — one place that knows your whole project roster
 - **Discord bot** — `!op status`, `!op morning`, `!op review prs`, etc.
