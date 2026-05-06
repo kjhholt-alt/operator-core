@@ -13,6 +13,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .action_packets import (
+    PACKET_STATUSES,
+    action_packet_dir,
+    action_packet_kinds,
+    action_packet_summary,
+    create_action_packet,
+    list_action_packets,
+    update_action_packet_status,
+)
 from .http_server import register_extra_route
 from .war_room_agents import collect_agent_coordination
 from .war_room_autonomy import collect_autonomy_evidence
@@ -142,6 +151,7 @@ def collect_cockpit_state() -> dict[str, Any]:
     morning_md_path = war_room / "morning.md"
     weekly_json_path = war_room / "weekly-review.json"
     cost_path = Path(os.environ.get("OPERATOR_PORTFOLIO_COST_PATH", str(data_dir / "portfolio_cost.json")))
+    packets_dir = action_packet_dir(data_dir)
 
     portfolio_ir = _read_json(portfolio_ir_path, {})
     weekly_review = _read_json(weekly_json_path, {})
@@ -159,6 +169,7 @@ def collect_cockpit_state() -> dict[str, Any]:
         data_dir=data_dir,
         status_dir=status_dir,
     )
+    action_packets = list_action_packets(packets_dir)
 
     health_counts = {"green": 0, "yellow": 0, "red": 0, "unknown": 0}
     for doc in statuses:
@@ -171,6 +182,7 @@ def collect_cockpit_state() -> dict[str, Any]:
             "war_room": str(war_room),
             "data_dir": str(data_dir),
             "status_dir": str(status_dir),
+            "action_packet_dir": str(packets_dir),
         },
         "artifacts": {
             "portfolio_health": _artifact_meta(portfolio_ir_path),
@@ -192,6 +204,13 @@ def collect_cockpit_state() -> dict[str, Any]:
         "weekly_review": weekly_review if isinstance(weekly_review, dict) else {},
         "cost": portfolio_cost if isinstance(portfolio_cost, dict) else {},
         "source_registry": source_registry,
+        "action_packets": {
+            "dir": str(packets_dir),
+            "kinds": action_packet_kinds(),
+            "statuses": list(PACKET_STATUSES),
+            "summary": action_packet_summary(action_packets),
+            "items": action_packets,
+        },
         "statuses": {
             "count": len(statuses),
             "health_counts": health_counts,
@@ -517,6 +536,89 @@ def _source_rows(items: list[dict[str, Any]]) -> str:
     return "\n".join(rows) or '<tr><td colspan="7" class="empty">No source registry entries.</td></tr>'
 
 
+def _packet_kind_options(kinds: list[dict[str, Any]]) -> str:
+    rows = []
+    for kind in kinds:
+        rows.append(f'<option value="{_esc(kind.get("id"))}">{_esc(kind.get("label"))}</option>')
+    return "\n".join(rows)
+
+
+def _packet_rows(packets: list[dict[str, Any]], statuses: list[str]) -> str:
+    rows = []
+    status_options = "".join(f'<option value="{_esc(status)}">{{selected}}{_esc(status)}</option>' for status in statuses)
+    for packet in packets[:12]:
+        current = str(packet.get("status") or "draft")
+        options = status_options.replace("{selected}", "")
+        options = options.replace(f'value="{_esc(current)}">', f'value="{_esc(current)}" selected>')
+        paths = packet.get("paths") if isinstance(packet.get("paths"), dict) else {}
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(packet.get("title"))}<div class="subtle mono">{_esc(packet.get("id"))}</div></td>'
+            f'<td>{_esc(packet.get("kind_label") or packet.get("kind"))}</td>'
+            f'<td><select class="packet-status" data-packet-id="{_esc(packet.get("id"))}">{options}</select></td>'
+            f'<td class="mono small">{_esc(packet.get("updated_at"))}</td>'
+            f'<td class="mono small">{_esc(paths.get("markdown"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No action packets created yet.</td></tr>'
+
+
+def _packet_context_for(kind: str, state: dict[str, Any], extra_summary: str = "") -> dict[str, Any]:
+    mission_control = state.get("mission_control") if isinstance(state.get("mission_control"), dict) else {}
+    agent_coordination = state.get("agent_coordination") if isinstance(state.get("agent_coordination"), dict) else {}
+    autonomy_evidence = state.get("autonomy_evidence") if isinstance(state.get("autonomy_evidence"), dict) else {}
+    portfolio_motion = state.get("portfolio_motion") if isinstance(state.get("portfolio_motion"), dict) else {}
+    weekly = state.get("weekly_review") if isinstance(state.get("weekly_review"), dict) else {}
+    source_registry = state.get("source_registry") if isinstance(state.get("source_registry"), dict) else {}
+
+    launch_queue = agent_coordination.get("launch_queue") if isinstance(agent_coordination.get("launch_queue"), dict) else {}
+    handoff_board = agent_coordination.get("handoff_board") if isinstance(agent_coordination.get("handoff_board"), dict) else {}
+    mission = mission_control.get("mission") if isinstance(mission_control.get("mission"), dict) else {}
+    source_actions = mission_control.get("source_actions") if isinstance(mission_control.get("source_actions"), dict) else {}
+    latest_run = autonomy_evidence.get("latest") if isinstance(autonomy_evidence.get("latest"), dict) else {}
+    project_motion = portfolio_motion.get("project_motion") if isinstance(portfolio_motion.get("project_motion"), dict) else {}
+    auto_merged = weekly.get("auto_merged") if isinstance(weekly.get("auto_merged"), list) else []
+    source_cards = source_actions.get("cards") if isinstance(source_actions.get("cards"), list) else []
+
+    return {
+        "summary": extra_summary or f"Created from Operator Cockpit for {kind}.",
+        "generated_at": state.get("generated_at"),
+        "war_room": state.get("paths", {}).get("war_room") if isinstance(state.get("paths"), dict) else "",
+        "mission": {
+            "title": mission.get("title"),
+            "summary": mission.get("active_summary"),
+            "current_run": (mission_control.get("current_run") or {}).get("run_id")
+            if isinstance(mission_control.get("current_run"), dict)
+            else "",
+        },
+        "agent_queue": {
+            "top_mission": launch_queue.get("top_mission"),
+            "open_count": handoff_board.get("open_count"),
+            "claimed_count": handoff_board.get("claimed_count"),
+        },
+        "autonomy": {
+            "latest_run": latest_run.get("run_id"),
+            "phase": latest_run.get("phase"),
+            "next_action": latest_run.get("next_action"),
+            "latest_checkpoint": latest_run.get("latest_checkpoint"),
+        },
+        "weekly_review": {
+            "auto_merged_count": len(auto_merged),
+            "largest_auto_merged": auto_merged[:5],
+        },
+        "source_actions": {
+            "count": source_actions.get("count", len(source_cards)),
+            "top_cards": source_cards[:5],
+            "missing_connections": source_registry.get("missing_connections", [])[:8]
+            if isinstance(source_registry.get("missing_connections"), list)
+            else [],
+        },
+        "portfolio_motion": {
+            "top_mover": project_motion.get("top_mover"),
+        },
+    }
+
+
 def render_cockpit(state: dict[str, Any]) -> str:
     portfolio = state["portfolio"]
     overview = portfolio.get("overview") or {}
@@ -568,6 +670,12 @@ def render_cockpit(state: dict[str, Any]) -> str:
     registry = state.get("source_registry") if isinstance(state.get("source_registry"), dict) else {}
     registry_summary = registry.get("summary") if isinstance(registry.get("summary"), dict) else {}
     missing_connections = registry.get("missing_connections") if isinstance(registry.get("missing_connections"), list) else []
+    action_packets = state.get("action_packets") if isinstance(state.get("action_packets"), dict) else {}
+    packet_summary = action_packets.get("summary") if isinstance(action_packets.get("summary"), dict) else {}
+    packet_status_counts = packet_summary.get("by_status") if isinstance(packet_summary.get("by_status"), dict) else {}
+    packet_items = action_packets.get("items") if isinstance(action_packets.get("items"), list) else []
+    packet_kinds = action_packets.get("kinds") if isinstance(action_packets.get("kinds"), list) else []
+    packet_statuses = action_packets.get("statuses") if isinstance(action_packets.get("statuses"), list) else list(PACKET_STATUSES)
 
     return f"""<!doctype html>
 <html lang="en">
@@ -587,6 +695,7 @@ def render_cockpit(state: dict[str, Any]) -> str:
     <a href="#memory">Memory</a>
     <a href="#motion">Motion</a>
     <a href="#quality">Quality</a>
+    <a href="#actions">Actions</a>
     <a href="#portfolio">Portfolio</a>
     <a href="#briefing">Briefing</a>
     <a href="#review">Review</a>
@@ -601,7 +710,7 @@ def render_cockpit(state: dict[str, Any]) -> str:
         <h1>Operator Cockpit</h1>
         <p class="muted mono">Last refresh <span id="last-refresh">{_esc(state["generated_at"])}</span></p>
       </div>
-      <div class="links"><a href="/ops">Ops</a><a href="/gate-review">Gate Review</a><a href="/cut-over">Cut-over</a></div>
+      <div class="links"><a href="/ops">Ops</a><a href="/gate-review">Gate Review</a><a href="/cut-over">Cut-over</a><a href="#actions">Action Packets</a></div>
     </header>
 
     <section class="metrics" id="portfolio">
@@ -618,6 +727,35 @@ def render_cockpit(state: dict[str, Any]) -> str:
       {_stat("Auto-Merged", auto_count, "warn" if auto_count else "")}
       {_stat("Week Cost", _money(trends.get("week_current_usd")), "")}
       {_stat("Unconnected Sources", registry_summary.get("not_connected", 0), "warn" if registry_summary.get("not_connected", 0) else "")}
+      {_stat("Action Packets", packet_summary.get("open_count", 0), "warn" if packet_summary.get("open_count", 0) else "")}
+    </section>
+
+    <section class="panel" id="actions">
+      <div class="panel-head"><h2>Action Packets</h2><span>{_esc(action_packets.get("dir") or "")}</span></div>
+      <div class="action-grid">
+        <div>
+          <div class="eyebrow">Create Local Packet</div>
+          <div class="packet-form">
+            <select id="packet-kind">{_packet_kind_options(packet_kinds)}</select>
+            <input id="packet-title" placeholder="Optional packet title">
+            <textarea id="packet-summary" rows="3" placeholder="Optional context note"></textarea>
+            <button id="packet-create" type="button">Create Packet</button>
+            <span id="packet-message" class="subtle"></span>
+          </div>
+        </div>
+        <div>
+          <div class="eyebrow">Status</div>
+          <div class="score-row">
+            <span class="score-pill">draft {_esc(packet_status_counts.get("draft", 0))}</span>
+            <span class="score-pill">ready {_esc(packet_status_counts.get("ready", 0))}</span>
+            <span class="score-pill">claimed {_esc(packet_status_counts.get("claimed", 0))}</span>
+            <span class="score-pill">done {_esc(packet_status_counts.get("done", 0))}</span>
+          </div>
+          <p class="muted">Local files only. No sends, deletes, external APIs, or remote side effects.</p>
+        </div>
+      </div>
+      <div class="panel-subhead"><h3>Latest Packets</h3><span>{packet_summary.get("count", 0)} total</span></div>
+      <table><thead><tr><th>Packet</th><th>Kind</th><th>Status</th><th>Updated</th><th>Markdown</th></tr></thead><tbody>{_packet_rows(packet_items, [str(s) for s in packet_statuses])}</tbody></table>
     </section>
 
     <section class="panel" id="quality">
@@ -883,6 +1021,59 @@ async function refreshCockpit() {{
   }} catch (e) {{}}
 }}
 setInterval(refreshCockpit, 15000);
+
+const packetMessage = document.getElementById('packet-message');
+const packetCreate = document.getElementById('packet-create');
+if (packetCreate) {{
+  packetCreate.addEventListener('click', async () => {{
+    const kind = document.getElementById('packet-kind');
+    const title = document.getElementById('packet-title');
+    const summary = document.getElementById('packet-summary');
+    if (packetMessage) packetMessage.textContent = 'creating...';
+    try {{
+      const resp = await fetch('/cockpit/actions/create', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{
+          kind: kind ? kind.value : '',
+          title: title ? title.value : '',
+          context_summary: summary ? summary.value : '',
+        }}),
+      }});
+      const data = await resp.json();
+      if (!resp.ok) {{
+        if (packetMessage) packetMessage.textContent = data.detail || data.error || 'create failed';
+        return;
+      }}
+      if (packetMessage) packetMessage.textContent = 'created ' + data.packet.id;
+      window.setTimeout(() => window.location.reload(), 500);
+    }} catch (e) {{
+      if (packetMessage) packetMessage.textContent = 'create failed';
+    }}
+  }});
+}}
+
+document.querySelectorAll('.packet-status').forEach(select => {{
+  select.addEventListener('change', async () => {{
+    const packetId = select.dataset.packetId;
+    const previous = select.getAttribute('data-last-status') || '';
+    try {{
+      const resp = await fetch('/cockpit/actions/status', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{id: packetId, status: select.value}}),
+      }});
+      if (!resp.ok) {{
+        select.value = previous || 'draft';
+        return;
+      }}
+      select.setAttribute('data-last-status', select.value);
+    }} catch (e) {{
+      select.value = previous || 'draft';
+    }}
+  }});
+  select.setAttribute('data-last-status', select.value);
+}});
 </script>
 </body>
 </html>"""
@@ -895,8 +1086,41 @@ def register_cockpit_routes() -> None:
     def _get_cockpit_json(handler: Any, body: Any) -> tuple[int, dict[str, Any]]:
         return 200, collect_cockpit_state()
 
+    def _post_create_action_packet(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        body = body or {}
+        kind = str(body.get("kind") or "")
+        title = str(body.get("title") or "").strip() or None
+        context_summary = str(body.get("context_summary") or "").strip()
+        state = collect_cockpit_state()
+        try:
+            packet = create_action_packet(
+                kind=kind,
+                title=title,
+                context=_packet_context_for(kind, state, context_summary),
+                packet_dir=action_packet_dir(_data_dir()),
+            )
+        except ValueError as exc:
+            return 400, {"error": "invalid_action_packet", "detail": str(exc)}
+        return 201, {"ok": True, "packet": packet}
+
+    def _post_update_action_packet_status(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        body = body or {}
+        try:
+            packet = update_action_packet_status(
+                packet_id=str(body.get("id") or ""),
+                status=str(body.get("status") or ""),
+                packet_dir=action_packet_dir(_data_dir()),
+            )
+        except FileNotFoundError:
+            return 404, {"error": "packet_not_found"}
+        except ValueError as exc:
+            return 400, {"error": "invalid_action_packet", "detail": str(exc)}
+        return 200, {"ok": True, "packet": packet}
+
     register_extra_route("GET", "/cockpit", _get_cockpit)
     register_extra_route("GET", "/cockpit.json", _get_cockpit_json)
+    register_extra_route("POST", "/cockpit/actions/create", _post_create_action_packet)
+    register_extra_route("POST", "/cockpit/actions/status", _post_update_action_packet_status)
 
 
 _CSS = """
@@ -944,7 +1168,8 @@ p { margin: 4px 0 0; }
 .panel-subhead span { color: var(--muted); }
 .grid-two { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 14px; }
 .mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(260px, 0.8fr); gap: 14px; }
-.mission-grid > div, .agent-grid > div, .autonomy-grid > div, .memory-grid > div, .motion-grid > div, .quality-grid > div { border: 1px solid var(--line); background: var(--panel-2); padding: 12px; min-height: 170px; }
+.action-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.8fr); gap: 14px; }
+.mission-grid > div, .agent-grid > div, .autonomy-grid > div, .memory-grid > div, .motion-grid > div, .quality-grid > div, .action-grid > div { border: 1px solid var(--line); background: var(--panel-2); padding: 12px; min-height: 170px; }
 .eyebrow { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
 .spacer { margin-top: 14px; }
 .run-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 12px; }
@@ -958,6 +1183,11 @@ p { margin: 4px 0 0; }
 .claim.claimed, .claim.busy { border-color: rgba(216, 170, 85, 0.45); }
 .claim-agent { font-weight: 700; }
 .claim-status { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+.packet-form { display: grid; gap: 8px; }
+.packet-form select, .packet-form input, .packet-form textarea, .packet-status { width: 100%; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 8px; font: inherit; }
+.packet-form textarea { resize: vertical; min-height: 74px; }
+.packet-form button { width: fit-content; border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 8px 12px; cursor: pointer; }
+.packet-form button:hover { background: rgba(110, 168, 255, 0.26); }
 .score-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .score-pill { display: inline-block; border: 1px solid rgba(110, 168, 255, 0.45); color: var(--accent); background: rgba(110, 168, 255, 0.08); padding: 4px 8px; font-size: 12px; }
 .resume-box { margin-top: 12px; border: 1px solid var(--line); background: var(--panel-2); padding: 10px; }
@@ -984,11 +1214,11 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   .shell { grid-template-columns: 1fr; }
   .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .rail a { display: inline-block; }
-  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid { grid-template-columns: 1fr 1fr; }
+  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid, .action-grid { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 620px) {
   main { padding: 12px; }
-  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid { grid-template-columns: 1fr; }
+  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid, .action-grid { grid-template-columns: 1fr; }
   .topbar, .panel-head { display: block; }
 }
 """

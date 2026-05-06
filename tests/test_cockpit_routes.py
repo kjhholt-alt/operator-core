@@ -710,6 +710,8 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert "Skills / QA / Run History" in html
             assert "War Room Polish" in html
             assert "Keep migration local and testable" in html
+            assert "Action Packets" in html
+            assert "Create Local Packet" in html
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             conn.request("GET", "/cockpit.json")
@@ -725,6 +727,49 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert data["memory_learning"]["memory"]["summary"]["indexed_documents"] == 3
             assert data["portfolio_motion"]["project_motion"]["top_mover"]["title"] == "Operator Core"
             assert data["quality_history"]["qa"]["all_pages"]["status"] == "pass"
+            assert data["action_packets"]["summary"]["count"] == 0
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({
+                "kind": "weekly_review_follow_up",
+                "title": "Review autonomous merges",
+                "context_summary": "Spot-check largest no-review merge.",
+            })
+            conn.request(
+                "POST",
+                "/cockpit/actions/create",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            created = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 201
+            packet_id = created["packet"]["id"]
+            assert created["packet"]["status"] == "draft"
+            assert (cockpit_env["data"] / "action_packets" / f"{packet_id}.md").exists()
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({"id": packet_id, "status": "ready"})
+            conn.request(
+                "POST",
+                "/cockpit/actions/status",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            updated = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 200
+            assert updated["packet"]["status"] == "ready"
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/cockpit.json")
+            resp = conn.getresponse()
+            data = json.loads(resp.read())
+            conn.close()
+            assert data["action_packets"]["summary"]["count"] == 1
+            assert data["action_packets"]["summary"]["by_status"]["ready"] == 1
         finally:
             server.shutdown()
             server.server_close()
