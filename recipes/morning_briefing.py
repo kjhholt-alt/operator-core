@@ -19,7 +19,6 @@ import datetime as dt
 import json
 import os
 import subprocess
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -54,15 +53,35 @@ TRACKED_REPOS = (
 )
 
 
-@dataclass
 class SectionResult:
-    """Per-section output. _error is a soft signal: render proceeds with
-    a small error band rather than crashing the whole briefing."""
+    """Per-section output. ``error`` is a soft signal: render proceeds with
+    a small error band rather than crashing the whole briefing.
 
-    title: str
-    payload: Any = None
-    error: Optional[str] = None
-    score: int = 0  # for ranker hints
+    Plain class (not @dataclass) because dataclass + ``from __future__ import
+    annotations`` + importlib spec_from_file_location interact badly when the
+    recipe registry imports under a synthetic module name -- ``cls.__module__``
+    points at a name not yet in sys.modules and dataclass trips on the lookup.
+    """
+
+    __slots__ = ("title", "payload", "error", "score")
+
+    def __init__(
+        self,
+        title: str,
+        payload: Any = None,
+        error: Optional[str] = None,
+        score: int = 0,
+    ) -> None:
+        self.title = title
+        self.payload = payload
+        self.error = error
+        self.score = score
+
+    def __repr__(self) -> str:  # pragma: no cover
+        return (
+            f"SectionResult(title={self.title!r}, payload={self.payload!r}, "
+            f"error={self.error!r}, score={self.score!r})"
+        )
 
 
 # ---------------------------------------------------------------------

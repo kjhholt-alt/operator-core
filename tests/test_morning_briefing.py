@@ -242,6 +242,7 @@ def test_ranker_sorts_by_score() -> None:
 
 
 def test_format_produces_valid_ir() -> None:
+    pytest.importorskip("dashboards", reason="templated-dashboards not installed; install with .[dev]")
     sections = {
         "Overnight replies": SectionResult(title="Overnight replies", payload={"hot": 0, "total": 0, "by_category": {}}),
         "Portfolio health": SectionResult(title="Portfolio health", payload={"kpis": {"Tracked": 25, "Green": 6, "Yellow": 4, "Red": 0, "Unknown": 15}, "ir_subtitle": "test"}),
@@ -262,6 +263,7 @@ def test_format_produces_valid_ir() -> None:
 
 def test_format_writes_html_and_md(tmp_war_room: Path) -> None:
     """Recipe.format() writes both files."""
+    pytest.importorskip("dashboards", reason="templated-dashboards not installed; install with .[dev]")
     sections = {
         "Overnight replies": SectionResult(title="Overnight replies", payload={"hot": 0, "total": 0, "by_category": {}}),
         "Portfolio health": SectionResult(title="Portfolio health", error="missing"),
