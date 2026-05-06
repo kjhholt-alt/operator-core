@@ -35,7 +35,16 @@ dependencies = [
 [project.optional-dependencies]
 discord = ["discord.py>=2.3"]
 status  = ["rich>=13.0"]
-dev     = ["pytest>=7.4", "pytest-asyncio>=0.21", "rich>=13.0"]
+dev     = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "rich>=13.0",
+    # Sibling libs consumed by recipes (e.g. portfolio_health). Listed as dev
+    # so the verify CI job has them, without forcing them on plain installs.
+    "templated-dashboards>=0.2.0",
+    "events-ndjson>=0.1.0",
+    "status-spec>=1.0.0",
+]
 
 [project.scripts]
 operator = "operator_core.cli:main"

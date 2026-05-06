@@ -21,6 +21,11 @@ import pytest
 
 from operator_core.recipes import RecipeContext
 
+# The recipe consumes templated-dashboards at format/render time. Skip the
+# whole module if it's not available in this environment (e.g. plain
+# `pip install -e .` without the dev extras).
+pytest.importorskip("dashboards", reason="templated-dashboards not installed; install with .[dev]")
+
 
 @pytest.fixture
 def tmp_env(tmp_path, monkeypatch):
