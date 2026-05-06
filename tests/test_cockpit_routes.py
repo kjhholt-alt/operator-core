@@ -549,6 +549,10 @@ def test_collect_cockpit_state_reads_artifacts(cockpit_env):
     assert state["quality_history"]["skills"]["skill_count"] == 1
     assert state["quality_history"]["qa"]["all_pages"]["status"] == "pass"
     assert state["quality_history"]["run_history"]["run_count"] == 1
+    assert state["project_timeline"]["summary"]["event_count"] >= 8
+    assert state["project_timeline"]["summary"]["counts_by_type"]["status_snapshot"] == 2
+    assert "operator-core" in state["project_timeline"]["by_project"]
+    assert (cockpit_env["data"] / "project_timelines" / "operator-core.jsonl").exists()
 
 
 def test_collect_mission_control_reads_mission_artifacts(cockpit_env):
@@ -712,6 +716,8 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert "Keep migration local and testable" in html
             assert "Action Packets" in html
             assert "Create Local Packet" in html
+            assert "Project Timeline" in html
+            assert "agent_checkpoint" in html
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             conn.request("GET", "/cockpit.json")
@@ -728,6 +734,7 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert data["portfolio_motion"]["project_motion"]["top_mover"]["title"] == "Operator Core"
             assert data["quality_history"]["qa"]["all_pages"]["status"] == "pass"
             assert data["action_packets"]["summary"]["count"] == 0
+            assert data["project_timeline"]["summary"]["counts_by_type"]["agent_checkpoint"] == 2
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             payload = json.dumps({
@@ -770,6 +777,10 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             conn.close()
             assert data["action_packets"]["summary"]["count"] == 1
             assert data["action_packets"]["summary"]["by_status"]["ready"] == 1
+            assert any(
+                event["type"] == "action_packet" and event["payload"]["packet_id"] == packet_id
+                for event in data["project_timeline"]["latest"]
+            )
         finally:
             server.shutdown()
             server.server_close()

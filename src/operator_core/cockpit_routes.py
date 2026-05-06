@@ -23,6 +23,7 @@ from .action_packets import (
     update_action_packet_status,
 )
 from .http_server import register_extra_route
+from .project_timeline import collect_project_timelines, project_timeline_dir
 from .war_room_agents import collect_agent_coordination
 from .war_room_autonomy import collect_autonomy_evidence
 from .war_room_memory import collect_memory_learning
@@ -176,13 +177,14 @@ def collect_cockpit_state() -> dict[str, Any]:
         health = doc["health"].lower()
         health_counts[health if health in health_counts else "unknown"] += 1
 
-    return {
+    state = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "paths": {
             "war_room": str(war_room),
             "data_dir": str(data_dir),
             "status_dir": str(status_dir),
             "action_packet_dir": str(packets_dir),
+            "project_timeline_dir": str(project_timeline_dir(data_dir)),
         },
         "artifacts": {
             "portfolio_health": _artifact_meta(portfolio_ir_path),
@@ -217,6 +219,12 @@ def collect_cockpit_state() -> dict[str, Any]:
             "items": statuses,
         },
     }
+    state["project_timeline"] = collect_project_timelines(
+        state=state,
+        output_dir=project_timeline_dir(data_dir),
+        write=True,
+    )
+    return state
 
 
 def _esc(value: Any) -> str:
@@ -563,6 +571,40 @@ def _packet_rows(packets: list[dict[str, Any]], statuses: list[str]) -> str:
     return "\n".join(rows) or '<tr><td colspan="5" class="empty">No action packets created yet.</td></tr>'
 
 
+def _timeline_rows(events: list[dict[str, Any]]) -> str:
+    rows = []
+    for event in events[:18]:
+        severity = str(event.get("severity") or "low").lower()
+        rows.append(
+            "<tr>"
+            f'<td><span class="health {severity}">{_esc(severity)}</span></td>'
+            f'<td>{_esc(event.get("project"))}</td>'
+            f'<td>{_esc(event.get("title"))}<div class="subtle">{_esc(event.get("summary"))}</div></td>'
+            f'<td>{_esc(event.get("type"))}</td>'
+            f'<td class="mono small">{_esc(event.get("ts"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No project timeline events found.</td></tr>'
+
+
+def _timeline_project_rows(by_project: dict[str, Any]) -> str:
+    rows = []
+    for project, events in sorted(by_project.items(), key=lambda kv: len(kv[1]) if isinstance(kv[1], list) else 0, reverse=True)[:12]:
+        if not isinstance(events, list):
+            continue
+        risky = sum(1 for event in events if isinstance(event, dict) and event.get("severity") in {"warn", "high"})
+        latest = events[0] if events and isinstance(events[0], dict) else {}
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(project)}</td>'
+            f'<td class="right mono">{len(events)}</td>'
+            f'<td class="right mono">{risky}</td>'
+            f'<td>{_esc(latest.get("title"))}<div class="subtle">{_esc(latest.get("summary"))}</div></td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="4" class="empty">No project timelines materialized.</td></tr>'
+
+
 def _packet_context_for(kind: str, state: dict[str, Any], extra_summary: str = "") -> dict[str, Any]:
     mission_control = state.get("mission_control") if isinstance(state.get("mission_control"), dict) else {}
     agent_coordination = state.get("agent_coordination") if isinstance(state.get("agent_coordination"), dict) else {}
@@ -676,6 +718,10 @@ def render_cockpit(state: dict[str, Any]) -> str:
     packet_items = action_packets.get("items") if isinstance(action_packets.get("items"), list) else []
     packet_kinds = action_packets.get("kinds") if isinstance(action_packets.get("kinds"), list) else []
     packet_statuses = action_packets.get("statuses") if isinstance(action_packets.get("statuses"), list) else list(PACKET_STATUSES)
+    project_timeline = state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {}
+    timeline_summary = project_timeline.get("summary") if isinstance(project_timeline.get("summary"), dict) else {}
+    timeline_latest = project_timeline.get("latest") if isinstance(project_timeline.get("latest"), list) else []
+    timeline_by_project = project_timeline.get("by_project") if isinstance(project_timeline.get("by_project"), dict) else {}
 
     return f"""<!doctype html>
 <html lang="en">
@@ -696,6 +742,7 @@ def render_cockpit(state: dict[str, Any]) -> str:
     <a href="#motion">Motion</a>
     <a href="#quality">Quality</a>
     <a href="#actions">Actions</a>
+    <a href="#timeline">Timeline</a>
     <a href="#portfolio">Portfolio</a>
     <a href="#briefing">Briefing</a>
     <a href="#review">Review</a>
@@ -728,6 +775,7 @@ def render_cockpit(state: dict[str, Any]) -> str:
       {_stat("Week Cost", _money(trends.get("week_current_usd")), "")}
       {_stat("Unconnected Sources", registry_summary.get("not_connected", 0), "warn" if registry_summary.get("not_connected", 0) else "")}
       {_stat("Action Packets", packet_summary.get("open_count", 0), "warn" if packet_summary.get("open_count", 0) else "")}
+      {_stat("Timeline Risks", timeline_summary.get("risk_count", 0), "warn" if timeline_summary.get("risk_count", 0) else "")}
     </section>
 
     <section class="panel" id="actions">
@@ -756,6 +804,21 @@ def render_cockpit(state: dict[str, Any]) -> str:
       </div>
       <div class="panel-subhead"><h3>Latest Packets</h3><span>{packet_summary.get("count", 0)} total</span></div>
       <table><thead><tr><th>Packet</th><th>Kind</th><th>Status</th><th>Updated</th><th>Markdown</th></tr></thead><tbody>{_packet_rows(packet_items, [str(s) for s in packet_statuses])}</tbody></table>
+    </section>
+
+    <section class="panel" id="timeline">
+      <div class="panel-head"><h2>Project Timeline</h2><span>{_esc(project_timeline.get("dir") or "")}</span></div>
+      <div class="metrics compact">
+        {_stat("Projects", timeline_summary.get("project_count", 0))}
+        {_stat("Events", timeline_summary.get("event_count", 0))}
+        {_stat("Risk Events", timeline_summary.get("risk_count", 0), "warn" if timeline_summary.get("risk_count", 0) else "")}
+        {_stat("No-Review PRs", (timeline_summary.get("counts_by_type") or {}).get("pr_merged_no_review", 0) if isinstance(timeline_summary.get("counts_by_type"), dict) else 0, "warn")}
+        {_stat("Checkpoints", (timeline_summary.get("counts_by_type") or {}).get("agent_checkpoint", 0) if isinstance(timeline_summary.get("counts_by_type"), dict) else 0)}
+      </div>
+      <div class="panel-subhead"><h3>Latest Events</h3><span>normalized local facts</span></div>
+      <table><thead><tr><th>Risk</th><th>Project</th><th>Event</th><th>Type</th><th>Time</th></tr></thead><tbody>{_timeline_rows(timeline_latest)}</tbody></table>
+      <div class="panel-subhead"><h3>Projects</h3><span>materialized JSONL snapshots</span></div>
+      <table><thead><tr><th>Project</th><th class="right">Events</th><th class="right">Risk</th><th>Latest</th></tr></thead><tbody>{_timeline_project_rows(timeline_by_project)}</tbody></table>
     </section>
 
     <section class="panel" id="quality">
@@ -1205,6 +1268,9 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
 .badge.connected, .health.ok { color: var(--good); border-color: rgba(122, 198, 148, 0.45); background: rgba(122, 198, 148, 0.08); }
 .badge.static-only, .badge.not-connected, .health.stale { color: var(--warn); border-color: rgba(216, 170, 85, 0.45); background: rgba(216, 170, 85, 0.08); }
 .health.missing { color: var(--bad); border-color: rgba(227, 108, 108, 0.45); background: rgba(227, 108, 108, 0.08); }
+.health.low { color: var(--good); border-color: rgba(122, 198, 148, 0.45); background: rgba(122, 198, 148, 0.08); }
+.health.warn { color: var(--warn); border-color: rgba(216, 170, 85, 0.45); background: rgba(216, 170, 85, 0.08); }
+.health.high { color: var(--bad); border-color: rgba(227, 108, 108, 0.45); background: rgba(227, 108, 108, 0.08); }
 .brief { white-space: pre-wrap; margin: 0; min-height: 220px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); padding: 10px; overflow: auto; }
 .dot { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--muted); }
 .dot.green { background: var(--good); }
