@@ -198,6 +198,7 @@ def test_weekly_review_classifies_and_sorts_auto_merged_prs(tmp_path, monkeypatc
     from recipes import weekly_review as wr
 
     monkeypatch.setattr(wr, "WEEKLY_REVIEW_HTML", tmp_path / "weekly-review.html")
+    monkeypatch.setattr(wr, "WEEKLY_REVIEW_JSON", tmp_path / "weekly-review.json")
 
     search_rows = {
         "items": [
@@ -253,6 +254,7 @@ def test_weekly_review_classifies_and_sorts_auto_merged_prs(tmp_path, monkeypatc
     assert [pr["number"] for pr in result["human_reviewed"]] == [1]
     assert "large autonomous merge" in body
     assert wr.WEEKLY_REVIEW_HTML.exists()
+    assert wr.WEEKLY_REVIEW_JSON.exists()
     assert "Largest auto-merged PRs" in wr.WEEKLY_REVIEW_HTML.read_text(encoding="utf-8")
 
 

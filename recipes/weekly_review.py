@@ -36,6 +36,7 @@ def _war_room_dir() -> Path:
 
 WAR_ROOM_DIR = _war_room_dir()
 WEEKLY_REVIEW_HTML = WAR_ROOM_DIR / "weekly-review.html"
+WEEKLY_REVIEW_JSON = WAR_ROOM_DIR / "weekly-review.json"
 
 
 def _run_gh(args: list[str], *, timeout: float = 60.0) -> tuple[int, str, str]:
@@ -277,6 +278,13 @@ def _write_html(result: dict[str, Any], out: Path | None = None) -> Path:
     return out
 
 
+def _write_json(result: dict[str, Any], out: Path | None = None) -> Path:
+    out = out or WEEKLY_REVIEW_JSON
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+    return out
+
+
 @register_recipe
 class WeeklyReview(Recipe):
     name = "weekly_review"
@@ -317,13 +325,15 @@ class WeeklyReview(Recipe):
 
     async def format(self, ctx: RecipeContext, result: dict[str, Any]) -> str:
         html_path = _write_html(result)
+        json_path = _write_json(result)
         auto = result.get("auto_merged", [])
         reviewed = result.get("human_reviewed", [])
         lines = [
             f"**Weekly review** -- {result.get('total', 0)} merged PR(s) in last 7 days",
             f"- auto-merged/no human review: {len(auto)}",
             f"- human-reviewed: {len(reviewed)}",
-            f"- HTML: file:///{html_path.as_posix()}",
+            f"- cockpit: http://127.0.0.1:8765/cockpit#review",
+            f"- artifacts: {json_path.name}, {html_path.name}",
         ]
         if auto:
             lines.append("")

@@ -224,6 +224,11 @@ class Daemon:
         register_remote_route(self.store)
         register_metrics_route(self.http, self.store)
         try:
+            from .portfolio_routes import register_portfolio_routes
+            register_portfolio_routes()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("portfolio_routes registration failed: %s", exc)
+        try:
             from .gate_review_routes import register_gate_review_routes
             register_gate_review_routes()
         except Exception as exc:  # noqa: BLE001
@@ -233,6 +238,11 @@ class Daemon:
             register_cutover_routes()
         except Exception as exc:  # noqa: BLE001
             logger.warning("cutover_routes registration failed: %s", exc)
+        try:
+            from .cockpit_routes import register_cockpit_routes
+            register_cockpit_routes()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cockpit_routes registration failed: %s", exc)
         self._http_thread = threading.Thread(
             target=self.http.serve_forever,
             name="operator-http",
