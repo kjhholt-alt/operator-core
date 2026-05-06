@@ -18,6 +18,8 @@ from .war_room_agents import collect_agent_coordination
 from .war_room_autonomy import collect_autonomy_evidence
 from .war_room_memory import collect_memory_learning
 from .war_room_mission import collect_mission_control
+from .war_room_portfolio_motion import collect_portfolio_motion
+from .war_room_quality import collect_quality_history
 from .war_room_sources import collect_source_registry
 
 
@@ -150,6 +152,8 @@ def collect_cockpit_state() -> dict[str, Any]:
     agent_coordination = collect_agent_coordination(war_room)
     autonomy_evidence = collect_autonomy_evidence(war_room)
     memory_learning = collect_memory_learning(war_room)
+    portfolio_motion = collect_portfolio_motion(war_room)
+    quality_history = collect_quality_history(war_room)
     source_registry = collect_source_registry(
         war_room_dir=war_room,
         data_dir=data_dir,
@@ -183,6 +187,8 @@ def collect_cockpit_state() -> dict[str, Any]:
         "agent_coordination": agent_coordination,
         "autonomy_evidence": autonomy_evidence,
         "memory_learning": memory_learning,
+        "portfolio_motion": portfolio_motion,
+        "quality_history": quality_history,
         "weekly_review": weekly_review if isinstance(weekly_review, dict) else {},
         "cost": portfolio_cost if isinstance(portfolio_cost, dict) else {},
         "source_registry": source_registry,
@@ -401,6 +407,95 @@ def _document_rows(documents: list[dict[str, Any]]) -> str:
     return "\n".join(rows) or '<tr><td colspan="4" class="empty">No memory documents found.</td></tr>'
 
 
+def _motion_rows(projects: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in projects[:10]:
+        latest = item.get("latest_run") if isinstance(item.get("latest_run"), dict) else {}
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(item.get("title"))}<div class="subtle">{_esc(item.get("next_action"))}</div></td>'
+            f'<td>{_esc(item.get("lane"))}</td>'
+            f'<td class="right mono">{_esc(item.get("motion_score", 0))}</td>'
+            f'<td>{_esc(latest.get("mission") or "No run")}</td>'
+            f'<td>{_esc(item.get("evidence"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No project motion rows found.</td></tr>'
+
+
+def _side_project_rows(projects: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in projects[:8]:
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(item.get("title"))}<div class="subtle mono">{_esc(item.get("slug"))}</div></td>'
+            f'<td>{_esc(item.get("owner"))}</td>'
+            f'<td class="right mono">{_esc(item.get("build_score", 0))}</td>'
+            f'<td>{_esc(item.get("readiness_grade"))} / {_esc(item.get("readiness_score", 0))}</td>'
+            f'<td>{_esc(item.get("next_action"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No side-project rows found.</td></tr>'
+
+
+def _forge_rows(proposals: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in proposals[:8]:
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(item.get("title"))}<div class="subtle">{_esc(item.get("problem"))}</div></td>'
+            f'<td>{_esc(item.get("pillar"))}</td>'
+            f'<td>{_esc(item.get("status"))}</td>'
+            f'<td class="right mono">{_esc(item.get("forge_score", 0))}</td>'
+            f'<td>{_esc(item.get("first_build"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No Forge proposals found.</td></tr>'
+
+
+def _skill_rows(skills: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in skills[:10]:
+        triggers = item.get("triggers") if isinstance(item.get("triggers"), list) else []
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(item.get("name"))}<div class="subtle mono">{_esc(item.get("id"))}</div></td>'
+            f'<td>{_esc(item.get("domain"))}</td>'
+            f'<td>{_esc(item.get("use_when"))}</td>'
+            f'<td>{_esc(", ".join(str(t) for t in triggers[:5]))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="4" class="empty">No skills found.</td></tr>'
+
+
+def _agent_run_rows(runs: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in runs[:8]:
+        scores = item.get("scores") if isinstance(item.get("scores"), dict) else {}
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(item.get("mission"))}<div class="subtle">{_esc(item.get("verdict"))}</div></td>'
+            f'<td>{_esc(item.get("agent"))}</td>'
+            f'<td>{_esc(item.get("project"))}</td>'
+            f'<td class="right mono">{_esc(scores.get("total", ""))}/{_esc(scores.get("max", ""))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="4" class="empty">No agent runs found.</td></tr>'
+
+
+def _evaluation_rows(files: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in files[:8]:
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(item.get("title") or item.get("name"))}</td>'
+            f'<td class="mono small">{_esc(item.get("updated_at"))}</td>'
+            f'<td class="right mono">{_esc(item.get("size", 0))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="3" class="empty">No evaluation files found.</td></tr>'
+
+
 def _source_rows(items: list[dict[str, Any]]) -> str:
     order = {"not-connected": 0, "static-only": 1, "connected": 2}
     rows = []
@@ -437,10 +532,25 @@ def render_cockpit(state: dict[str, Any]) -> str:
     agent_coordination = state.get("agent_coordination") if isinstance(state.get("agent_coordination"), dict) else {}
     autonomy_evidence = state.get("autonomy_evidence") if isinstance(state.get("autonomy_evidence"), dict) else {}
     memory_learning = state.get("memory_learning") if isinstance(state.get("memory_learning"), dict) else {}
+    portfolio_motion = state.get("portfolio_motion") if isinstance(state.get("portfolio_motion"), dict) else {}
+    quality_history = state.get("quality_history") if isinstance(state.get("quality_history"), dict) else {}
     memory = memory_learning.get("memory") if isinstance(memory_learning.get("memory"), dict) else {}
     learning = memory_learning.get("learning") if isinstance(memory_learning.get("learning"), dict) else {}
     flow_rec = memory_learning.get("flow_recommendation") if isinstance(memory_learning.get("flow_recommendation"), dict) else {}
     flow_lessons = memory_learning.get("flow_lessons") if isinstance(memory_learning.get("flow_lessons"), dict) else {}
+    project_motion = portfolio_motion.get("project_motion") if isinstance(portfolio_motion.get("project_motion"), dict) else {}
+    side_projects = portfolio_motion.get("side_projects") if isinstance(portfolio_motion.get("side_projects"), dict) else {}
+    next_build = portfolio_motion.get("next_build_card") if isinstance(portfolio_motion.get("next_build_card"), dict) else {}
+    forge = portfolio_motion.get("forge") if isinstance(portfolio_motion.get("forge"), dict) else {}
+    skills = quality_history.get("skills") if isinstance(quality_history.get("skills"), dict) else {}
+    qa = quality_history.get("qa") if isinstance(quality_history.get("qa"), dict) else {}
+    run_history = quality_history.get("run_history") if isinstance(quality_history.get("run_history"), dict) else {}
+    all_pages = qa.get("all_pages") if isinstance(qa.get("all_pages"), dict) else {}
+    gauntlet = qa.get("gauntlet") if isinstance(qa.get("gauntlet"), dict) else {}
+    gauntlet_scores = qa.get("gauntlet_scores") if isinstance(qa.get("gauntlet_scores"), dict) else {}
+    top_mover = project_motion.get("top_mover") if isinstance(project_motion.get("top_mover"), dict) else {}
+    side_top = (side_projects.get("projects") or [{}])[0] if isinstance(side_projects.get("projects"), list) and side_projects.get("projects") else {}
+    forge_promotion = forge.get("promotion_recommendation") if isinstance(forge.get("promotion_recommendation"), dict) else {}
     latest_run = autonomy_evidence.get("latest") if isinstance(autonomy_evidence.get("latest"), dict) else {}
     latest_checkpoint = latest_run.get("latest_checkpoint") if isinstance(latest_run.get("latest_checkpoint"), dict) else {}
     launch_queue = agent_coordination.get("launch_queue") if isinstance(agent_coordination.get("launch_queue"), dict) else {}
@@ -475,6 +585,8 @@ def render_cockpit(state: dict[str, Any]) -> str:
     <a href="#agents">Agents</a>
     <a href="#autonomy">Autonomy</a>
     <a href="#memory">Memory</a>
+    <a href="#motion">Motion</a>
+    <a href="#quality">Quality</a>
     <a href="#portfolio">Portfolio</a>
     <a href="#briefing">Briefing</a>
     <a href="#review">Review</a>
@@ -498,12 +610,91 @@ def render_cockpit(state: dict[str, Any]) -> str:
       {_stat("Open Handoffs", handoff_board.get("open_count", 0), "warn" if handoff_board.get("open_count", 0) else "")}
       {_stat("Checkpoints", latest_run.get("checkpoint_count", 0), "")}
       {_stat("Memory Docs", (memory.get("summary") or {}).get("indexed_documents", 0) if isinstance(memory.get("summary"), dict) else 0, "")}
+      {_stat("Top Motion", top_mover.get("motion_score", 0), "")}
+      {_stat("QA Pages", all_pages.get("pass_count", 0), "good" if str(all_pages.get("status", "")).lower() == "pass" else "warn")}
       {_stat("Green", health.get("green", 0), "good")}
       {_stat("Yellow", health.get("yellow", 0), "warn")}
       {_stat("Red", health.get("red", 0), "bad")}
       {_stat("Auto-Merged", auto_count, "warn" if auto_count else "")}
       {_stat("Week Cost", _money(trends.get("week_current_usd")), "")}
       {_stat("Unconnected Sources", registry_summary.get("not_connected", 0), "warn" if registry_summary.get("not_connected", 0) else "")}
+    </section>
+
+    <section class="panel" id="quality">
+      <div class="panel-head"><h2>Skills / QA / Run History</h2><span>{_esc(quality_history.get("generated_at", ""))}</span></div>
+      <div class="quality-grid">
+        <div>
+          <div class="eyebrow">Skills Arena</div>
+          <h3>{_esc(skills.get("skill_count", 0))} skills</h3>
+          <p>{_esc(skills.get("purpose") or "No skills registry found.")}</p>
+          <div class="run-strip">
+            <span><strong>Runs</strong> {_esc(skills.get("run_count", 0))}</span>
+            <span><strong>Proposals</strong> {_esc(skills.get("proposal_count", 0))}</span>
+          </div>
+        </div>
+        <div>
+          <div class="eyebrow">QA</div>
+          <h3>{_esc(all_pages.get("status") or "unknown")}</h3>
+          <p>{_esc(all_pages.get("browser_qa_status") or "No browser QA status.")}</p>
+          <div class="run-strip">
+            <span><strong>Pages</strong> {_esc(all_pages.get("page_count", 0))}</span>
+            <span><strong>Pass</strong> {_esc(all_pages.get("pass_count", 0))}</span>
+            <span><strong>Missing</strong> {_esc(all_pages.get("missing_count", 0))}</span>
+          </div>
+        </div>
+        <div>
+          <div class="eyebrow">Gauntlet / Runs</div>
+          <h3>{_esc(gauntlet.get("verdict") or "No gauntlet")}</h3>
+          <p>{_esc(gauntlet.get("lesson") or gauntlet.get("mission") or "No gauntlet report found.")}</p>
+          <div class="run-strip">
+            <span><strong>Flow</strong> {_esc(gauntlet_scores.get("flow", ""))}/{_esc(gauntlet_scores.get("flow_max", ""))}</span>
+            <span><strong>Agent runs</strong> {_esc(run_history.get("run_count", 0))}</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel-subhead"><h3>Skills</h3><span>{skills.get("skill_count", 0)} registered</span></div>
+      <table><thead><tr><th>Skill</th><th>Domain</th><th>Use When</th><th>Triggers</th></tr></thead><tbody>{_skill_rows(skills.get("skills", []) if isinstance(skills.get("skills"), list) else [])}</tbody></table>
+      <div class="panel-subhead"><h3>Latest Agent Runs</h3><span>{run_history.get("run_count", 0)} runs</span></div>
+      <table><thead><tr><th>Mission</th><th>Agent</th><th>Project</th><th class="right">Score</th></tr></thead><tbody>{_agent_run_rows(run_history.get("latest_runs", []) if isinstance(run_history.get("latest_runs"), list) else [])}</tbody></table>
+      <div class="panel-subhead"><h3>Evaluations</h3><span>{qa.get("evaluation_count", 0)} files</span></div>
+      <table><thead><tr><th>Evaluation</th><th>Updated</th><th class="right">Size</th></tr></thead><tbody>{_evaluation_rows(qa.get("evaluation_files", []) if isinstance(qa.get("evaluation_files"), list) else [])}</tbody></table>
+    </section>
+
+    <section class="panel" id="motion">
+      <div class="panel-head"><h2>Portfolio Motion Command</h2><span>{_esc(portfolio_motion.get("generated_at", ""))}</span></div>
+      <div class="motion-grid">
+        <div>
+          <div class="eyebrow">Top Mover</div>
+          <h3>{_esc(top_mover.get("title") or "No top mover")}</h3>
+          <p>{_esc(top_mover.get("next_action") or project_motion.get("purpose") or "No motion board found.")}</p>
+          <div class="run-strip">
+            <span><strong>Lane</strong> {_esc(top_mover.get("lane") or "unknown")}</span>
+            <span><strong>Score</strong> {_esc(top_mover.get("motion_score", 0))}</span>
+            <span><strong>Evidence</strong> {_esc(top_mover.get("evidence") or "none")}</span>
+          </div>
+        </div>
+        <div>
+          <div class="eyebrow">Side-Project Pick</div>
+          <h3>{_esc(side_top.get("title") or "No side-project pick")}</h3>
+          <p>{_esc(side_top.get("next_action") or side_top.get("tagline") or "No side-project queue found.")}</p>
+          <div class="run-strip">
+            <span><strong>Build</strong> {_esc(side_top.get("build_score", 0))}</span>
+            <span><strong>Ready</strong> {_esc(side_top.get("readiness_grade") or "")} {_esc(side_top.get("readiness_score", 0))}</span>
+          </div>
+        </div>
+        <div>
+          <div class="eyebrow">Next Build / Forge</div>
+          <h3>{_esc(next_build.get("build") or forge_promotion.get("title") or "No build card")}</h3>
+          <p>{_esc(next_build.get("next_action") or forge_promotion.get("first_action") or "No next action found.")}</p>
+          <ul class="tight-list">{_list_items(next_build.get("safety", []) if isinstance(next_build.get("safety"), list) else [], 3)}</ul>
+        </div>
+      </div>
+      <div class="panel-subhead"><h3>Project Motion</h3><span>{len(project_motion.get("projects", []) if isinstance(project_motion.get("projects"), list) else [])} ranked projects</span></div>
+      <table><thead><tr><th>Project</th><th>Lane</th><th class="right">Score</th><th>Latest Run</th><th>Evidence</th></tr></thead><tbody>{_motion_rows(project_motion.get("projects", []) if isinstance(project_motion.get("projects"), list) else [])}</tbody></table>
+      <div class="panel-subhead"><h3>Side-Project Builds</h3><span>{side_projects.get("project_count", 0)} projects / avg readiness {side_projects.get("average_readiness", 0)}</span></div>
+      <table><thead><tr><th>Project</th><th>Owner</th><th class="right">Build</th><th>Readiness</th><th>Next Action</th></tr></thead><tbody>{_side_project_rows(side_projects.get("projects", []) if isinstance(side_projects.get("projects"), list) else [])}</tbody></table>
+      <div class="panel-subhead"><h3>Forge Proposals</h3><span>{_esc((forge.get("summary") or {}).get("ready_count", 0) if isinstance(forge.get("summary"), dict) else 0)} ready</span></div>
+      <table><thead><tr><th>Proposal</th><th>Pillar</th><th>Status</th><th class="right">Score</th><th>First Build</th></tr></thead><tbody>{_forge_rows(forge.get("ready_proposals", []) if isinstance(forge.get("ready_proposals"), list) else [])}</tbody></table>
     </section>
 
     <section class="panel" id="memory">
@@ -752,8 +943,8 @@ p { margin: 4px 0 0; }
 .panel-subhead { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin: 16px 0 8px; }
 .panel-subhead span { color: var(--muted); }
 .grid-two { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr); gap: 14px; }
-.mission-grid, .agent-grid, .autonomy-grid, .memory-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(260px, 0.8fr); gap: 14px; }
-.mission-grid > div, .agent-grid > div, .autonomy-grid > div, .memory-grid > div { border: 1px solid var(--line); background: var(--panel-2); padding: 12px; min-height: 170px; }
+.mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(260px, 0.8fr); gap: 14px; }
+.mission-grid > div, .agent-grid > div, .autonomy-grid > div, .memory-grid > div, .motion-grid > div, .quality-grid > div { border: 1px solid var(--line); background: var(--panel-2); padding: 12px; min-height: 170px; }
 .eyebrow { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
 .spacer { margin-top: 14px; }
 .run-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; color: var(--muted); font-size: 12px; }
@@ -793,11 +984,11 @@ th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spa
   .shell { grid-template-columns: 1fr; }
   .rail { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .rail a { display: inline-block; }
-  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid { grid-template-columns: 1fr 1fr; }
+  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 620px) {
   main { padding: 12px; }
-  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid { grid-template-columns: 1fr; }
+  .metrics, .metrics.compact, .grid-two, .mission-grid, .agent-grid, .autonomy-grid, .memory-grid, .motion-grid, .quality-grid { grid-template-columns: 1fr; }
   .topbar, .panel-head { display: block; }
 }
 """

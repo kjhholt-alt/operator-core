@@ -191,7 +191,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         patterns=("war-room/project-motion-board.json", "war-room/PROJECT_MOTION_BOARD.md"),
         schema="json + markdown",
         target="Project Motion",
-        connection="not-connected",
+        connection="connected",
         freshness_hours=168,
     ),
     SourceSpec(
@@ -206,7 +206,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         ),
         schema="json + markdown",
         target="Side Projects",
-        connection="not-connected",
+        connection="connected",
         freshness_hours=336,
     ),
     SourceSpec(
@@ -223,7 +223,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         ),
         schema="json + jsonl + markdown",
         target="Forge",
-        connection="not-connected",
+        connection="connected",
         freshness_hours=336,
     ),
     SourceSpec(
@@ -239,7 +239,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         ),
         schema="json + jsonl + markdown",
         target="Skills",
-        connection="not-connected",
+        connection="connected",
         freshness_hours=336,
     ),
     SourceSpec(
@@ -255,7 +255,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         ),
         schema="markdown + json",
         target="Evaluation / QA",
-        connection="not-connected",
+        connection="connected",
         freshness_hours=336,
     ),
     SourceSpec(
@@ -271,7 +271,7 @@ SOURCE_SPECS: tuple[SourceSpec, ...] = (
         ),
         schema="markdown + jsonl + static html",
         target="Run History",
-        connection="not-connected",
+        connection="connected",
         freshness_hours=336,
     ),
     SourceSpec(

@@ -17,6 +17,8 @@ from operator_core.war_room_agents import collect_agent_coordination
 from operator_core.war_room_autonomy import collect_autonomy_evidence
 from operator_core.war_room_memory import collect_memory_learning
 from operator_core.war_room_mission import collect_mission_control
+from operator_core.war_room_portfolio_motion import collect_portfolio_motion
+from operator_core.war_room_quality import collect_quality_history
 from operator_core.war_room_sources import collect_source_registry
 
 
@@ -343,6 +345,179 @@ def cockpit_env(tmp_path, monkeypatch):
             "source_run": "run-2",
         }],
     }), encoding="utf-8")
+    (war / "project-motion-board.json").write_text(json.dumps({
+        "mode": "project-motion-board",
+        "purpose": "Watch projects move through lanes.",
+        "lanes": [{"lane": "Building", "count": 1, "projects": ["operator-core"]}],
+        "top_mover": {
+            "id": "operator-core",
+            "title": "Operator Core",
+            "path": "operator-core",
+            "lane": "Building",
+            "temperature": "hot",
+            "motion_score": 97,
+            "mention_count": 3,
+            "event_count": 2,
+            "last_moved": "2026-05-06T17:40:00",
+            "next_action": "Finish cockpit parity.",
+            "evidence": "tests/test_cockpit_routes.py",
+            "latest_run": {"mission": "Cockpit parity", "grade": "A", "duration_minutes": 60, "score": 12, "verdict": "Ship it."},
+        },
+        "projects": [{
+            "id": "operator-core",
+            "title": "Operator Core",
+            "path": "operator-core",
+            "lane": "Building",
+            "temperature": "hot",
+            "motion_score": 97,
+            "mention_count": 3,
+            "event_count": 2,
+            "last_moved": "2026-05-06T17:40:00",
+            "next_action": "Finish cockpit parity.",
+            "evidence": "tests/test_cockpit_routes.py",
+            "latest_run": {"mission": "Cockpit parity", "grade": "A", "duration_minutes": 60, "score": 12, "verdict": "Ship it."},
+        }],
+        "stream": [{"project": "Operator Core", "lane": "Building", "kind": "selected", "title": "Selected", "evidence": "test", "when": "now", "weight": 5}],
+    }), encoding="utf-8")
+    (war / "side-projects-portfolio-os.json").write_text(json.dumps({
+        "mode": "side-projects-portfolio-os",
+        "project_count": 2,
+        "codex_count": 1,
+        "claude_count": 1,
+        "average_readiness": 92,
+        "top_builds": ["23-tiktok-shop-watch"],
+        "projects": [{
+            "slug": "23-tiktok-shop-watch",
+            "title": "TikTok Shop Watch",
+            "owner": "Codex",
+            "status": "built v0",
+            "tier": "Tier 1",
+            "buildScore": 99,
+            "energyMode": "deep build",
+            "nextAction": "Build product URL intake.",
+            "tagline": "Watch products and sellers.",
+            "readiness": {"score": 100, "grade": "A", "blockers": []},
+            "git": {"clean": True},
+        }],
+        "safety": ["Local files only."],
+    }), encoding="utf-8")
+    (war / "SIDE_PROJECTS_NEXT_BUILDS.md").write_text(
+        "# Side Projects Next Builds\n\n"
+        "## 1. TikTok Shop Watch\n\n"
+        "- Slug: 23-tiktok-shop-watch\n"
+        "- Score: 99/100\n"
+        "- Readiness: A / 100/100\n"
+        "- First ticket: Build product URL intake.\n",
+        encoding="utf-8",
+    )
+    (war / "NEXT_BUILD_CARD.md").write_text(
+        "# Next Build Card\n\n"
+        "## Build\n\n- **Personal Console follow-up**\n\n"
+        "## Spec\n\nTurn this into a calmer command center.\n\n"
+        "## Next Action\n\n- Build the smallest local artifact.\n\n"
+        "## Stop Rule\n\n- Stop before external sends.\n\n"
+        "## Safety\n\n- Local only.\n- No launch.\n",
+        encoding="utf-8",
+    )
+    (war / "forge.json").write_text(json.dumps({
+        "version": "forge-v2-run-ledger",
+        "generated_at": "2026-05-06 12:00",
+        "summary": {"proposal_count": 2, "ready_count": 1, "run_count": 1, "promoted_count": 0},
+        "proposals": [{
+            "id": "decision-to-build-promoter",
+            "pillar": "Kruz Forge",
+            "title": "Decision-To-Build Promoter",
+            "status": "ready",
+            "problem": "Decisions do not become build cards.",
+            "build": ["Extract build-intent decisions."],
+            "verification": ["Run classifier."],
+            "scores": {"forge_score": 68},
+        }],
+        "runs": [{
+            "id": "forge-run-1",
+            "proposal_id": "decision-to-build-promoter",
+            "project": "War Room",
+            "status": "verified",
+            "result": "Parsed proposal.",
+            "updated_at": "2026-05-06 12:00",
+            "verification": ["Parsed JSON."],
+        }],
+        "gate_library": [{"id": "local-only", "name": "Local only", "rule": "No external sends."}],
+        "promotion_recommendation": {
+            "proposal_id": "decision-to-build-promoter",
+            "title": "Decision-To-Build Promoter",
+            "why": "Highest score.",
+            "first_action": "Extract build-intent decisions.",
+            "verification": ["Run classifier."],
+        },
+    }), encoding="utf-8")
+    (war / "forge-runs.jsonl").write_text(json.dumps({
+        "id": "forge-run-jsonl",
+        "proposal_id": "decision-to-build-promoter",
+        "project": "War Room",
+        "status": "verified",
+        "result": "JSONL run parsed.",
+        "updated_at": "2026-05-06 12:10",
+        "verification": ["Parsed JSONL."],
+    }) + "\n", encoding="utf-8")
+    (war / "kruz-skills.json").write_text(json.dumps({
+        "version": "2026-05-06",
+        "purpose": "Local workflow skills.",
+        "principles": ["Evidence exists."],
+        "skills": [{
+            "id": "war-room-polish",
+            "name": "War Room Polish",
+            "domain": "both",
+            "use_when": "Improving cockpit.",
+            "triggers": ["cockpit", "dashboard"],
+        }],
+    }), encoding="utf-8")
+    (war / "kruz-skill-runs.jsonl").write_text(json.dumps({
+        "timestamp": "2026-05-06T17:40:00",
+        "agent": "Codex",
+        "skill_id": "war-room-polish",
+        "task": "Cockpit parity",
+        "total": 28,
+        "max": 30,
+        "lesson": "Parity needs registry evidence.",
+    }) + "\n", encoding="utf-8")
+    (war / "kruz-skill-proposals.jsonl").write_text(json.dumps({
+        "id": "better-cockpit-audit",
+        "skill_id": "war-room-polish",
+        "proposal": "Add cockpit parity checks.",
+    }) + "\n", encoding="utf-8")
+    (war / "all-pages-qa.json").write_text(json.dumps({
+        "status": "pass",
+        "page_count": 2,
+        "pass_count": 2,
+        "warn_count": 0,
+        "missing_count": 0,
+        "browser_qa_status": "ready-for-browser",
+        "pages": [{"id": "cockpit", "title": "Cockpit", "status": "pass", "file": "cockpit.html"}],
+    }), encoding="utf-8")
+    (war / "gauntlet-report.json").write_text(json.dumps({
+        "date": "2026-05-06",
+        "mission": "Cockpit parity gauntlet",
+        "verdict": "pass",
+        "lesson": "Keep migration local and testable.",
+        "next_experiment": "Connect remaining sources.",
+        "flow_score": {"total": 12, "max": 12},
+        "universal_score": {"total": 12, "max": 12},
+    }), encoding="utf-8")
+    (war / "agent-runs.jsonl").write_text(json.dumps({
+        "id": "run-history-1",
+        "date": "2026-05-06",
+        "agent": "Codex",
+        "project": "Operator Core",
+        "mission": "Cockpit parity",
+        "verdict": "Ship cockpit parity.",
+        "next_sprint": "Keep moving.",
+        "scores": {"total": 11, "max": 12},
+    }) + "\n", encoding="utf-8")
+    (war / "RUNLOG.md").write_text("# War Room Run Log\n\n## Cockpit parity\n", encoding="utf-8")
+    evaluations = war / "evaluations"
+    evaluations.mkdir()
+    (evaluations / "cockpit-parity.md").write_text("# Cockpit Parity Evaluation\n\nPass.\n", encoding="utf-8")
     cockpit_dir = war / "cockpit"
     cockpit_dir.mkdir()
     (cockpit_dir / "cockpit_app.py").write_text("print('streamlit cockpit')\n", encoding="utf-8")
@@ -368,6 +543,12 @@ def test_collect_cockpit_state_reads_artifacts(cockpit_env):
     assert state["autonomy_evidence"]["latest"]["checkpoint_count"] == 2
     assert state["memory_learning"]["flow_recommendation"]["flow"] == "Product Sprint Flow"
     assert state["memory_learning"]["learning"]["latest_run"]["mission"] == "Agent Handoff Board"
+    assert state["portfolio_motion"]["project_motion"]["top_mover"]["title"] == "Operator Core"
+    assert state["portfolio_motion"]["side_projects"]["projects"][0]["title"] == "TikTok Shop Watch"
+    assert state["portfolio_motion"]["forge"]["promotion_recommendation"]["title"] == "Decision-To-Build Promoter"
+    assert state["quality_history"]["skills"]["skill_count"] == 1
+    assert state["quality_history"]["qa"]["all_pages"]["status"] == "pass"
+    assert state["quality_history"]["run_history"]["run_count"] == 1
 
 
 def test_collect_mission_control_reads_mission_artifacts(cockpit_env):
@@ -413,6 +594,28 @@ def test_collect_memory_learning_reads_memory_and_flow(cockpit_env):
     assert memory["scoreboard"]["real_runs"][0]["total"] == 10
 
 
+def test_collect_portfolio_motion_reads_motion_side_projects_and_forge(cockpit_env):
+    motion = collect_portfolio_motion(cockpit_env["war"])
+    assert motion["project_motion"]["top_mover"]["motion_score"] == 97
+    assert motion["project_motion"]["projects"][0]["title"] == "Operator Core"
+    assert motion["side_projects"]["project_count"] == 2
+    assert motion["side_projects"]["projects"][0]["slug"] == "23-tiktok-shop-watch"
+    assert motion["side_next_builds"][0]["title"] == "TikTok Shop Watch"
+    assert motion["next_build_card"]["build"] == "Personal Console follow-up"
+    assert motion["forge"]["ready_proposals"][0]["title"] == "Decision-To-Build Promoter"
+    assert motion["forge"]["runs"][0]["id"] == "forge-run-jsonl"
+
+
+def test_collect_quality_history_reads_skills_qa_and_runs(cockpit_env):
+    quality = collect_quality_history(cockpit_env["war"])
+    assert quality["skills"]["skill_count"] == 1
+    assert quality["skills"]["latest_runs"][0]["total"] == 28
+    assert quality["qa"]["all_pages"]["pass_count"] == 2
+    assert quality["qa"]["gauntlet"]["verdict"] == "pass"
+    assert quality["qa"]["evaluation_files"][0]["title"] == "Cockpit Parity Evaluation"
+    assert quality["run_history"]["latest_runs"][0]["mission"] == "Cockpit parity"
+
+
 def test_source_registry_tracks_unconnected_and_missing_sources(cockpit_env):
     registry = collect_source_registry(
         war_room_dir=cockpit_env["war"],
@@ -432,8 +635,14 @@ def test_source_registry_tracks_unconnected_and_missing_sources(cockpit_env):
     assert by_id["autonomy-runs"]["connection"] == "connected"
     assert by_id["memory-os"]["connection"] == "connected"
     assert by_id["learning-loop"]["connection"] == "connected"
+    assert by_id["project-motion"]["connection"] == "connected"
+    assert by_id["side-project-os"]["connection"] == "connected"
+    assert by_id["forge"]["connection"] == "connected"
+    assert by_id["skills-arena"]["connection"] == "connected"
+    assert by_id["evaluations"]["connection"] == "connected"
+    assert by_id["run-history"]["connection"] == "connected"
     assert by_id["agent-launch-queue"]["exists"] is True
-    assert by_id["forge"]["health"] == "missing"
+    assert by_id["forge"]["health"] == "ok"
     assert by_id["streamlit-cockpit"]["connection"] == "static-only"
 
 
@@ -494,6 +703,13 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert "Memory + Learning" in html
             assert "Product Sprint Flow" in html
             assert "Run Operator Core cockpit migration" in html
+            assert "Portfolio Motion Command" in html
+            assert "Finish cockpit parity" in html
+            assert "TikTok Shop Watch" in html
+            assert "Decision-To-Build Promoter" in html
+            assert "Skills / QA / Run History" in html
+            assert "War Room Polish" in html
+            assert "Keep migration local and testable" in html
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             conn.request("GET", "/cockpit.json")
@@ -502,11 +718,13 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             conn.close()
             assert resp.status == 200
             assert data["statuses"]["health_counts"]["green"] == 1
-            assert data["source_registry"]["summary"]["not_connected"] > 0
+            assert data["source_registry"]["summary"]["not_connected"] == 0
             assert data["mission_control"]["source_actions"]["count"] == 1
             assert data["agent_coordination"]["handoff_board"]["open_count"] == 1
             assert data["autonomy_evidence"]["latest"]["checkpoint_count"] == 2
             assert data["memory_learning"]["memory"]["summary"]["indexed_documents"] == 3
+            assert data["portfolio_motion"]["project_motion"]["top_mover"]["title"] == "Operator Core"
+            assert data["quality_history"]["qa"]["all_pages"]["status"] == "pass"
         finally:
             server.shutdown()
             server.server_close()
