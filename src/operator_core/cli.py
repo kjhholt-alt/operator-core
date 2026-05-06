@@ -236,6 +236,23 @@ def _cmd_version(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_outreach_audit_dashboard(args: argparse.Namespace) -> int:
+    """Print the shadow-vs-live divergence dashboard for the Sender Gate."""
+    import json as _json
+    from pathlib import Path as _Path
+
+    from .outreach_audit import compute_dashboard, render_text
+
+    events_path = _Path(args.events) if args.events else None
+    products = args.product or None
+    dash = compute_dashboard(events_path=events_path, products=products)
+    if args.json:
+        print(_json.dumps(dash.to_dict(), indent=2))
+    else:
+        print(render_text(dash))
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     # Lazy import: keeps `operator init` / `operator doctor` fast and
     # avoids pulling in sqlite / http deps just to bootstrap a config.
@@ -1125,6 +1142,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_schedule_install.add_argument("--dry-run", action="store_true", help="Plan only; do not call schtasks")
     p_schedule_install.set_defaults(func=_cmd_schedule_install)
+
+    # outreach -- Sender Gate audit + cut-over tooling
+    p_outreach = sub.add_parser(
+        "outreach",
+        help="Outreach Sender-Gate audit + cut-over inspection",
+    )
+    outreach_sub = p_outreach.add_subparsers(dest="outreach_command", required=True)
+
+    p_oad = outreach_sub.add_parser(
+        "audit-dashboard",
+        help="Show shadow-vs-live divergence per product (read-only)",
+    )
+    p_oad.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON instead of the human-friendly table",
+    )
+    p_oad.add_argument(
+        "--events",
+        help="Path to events.ndjson (defaults to outreach-common local fallback)",
+    )
+    p_oad.add_argument(
+        "--product",
+        action="append",
+        help="Restrict to this product slug (repeatable)",
+    )
+    p_oad.set_defaults(func=_cmd_outreach_audit_dashboard)
 
     # version
     p_version = sub.add_parser("version", help="Print version")

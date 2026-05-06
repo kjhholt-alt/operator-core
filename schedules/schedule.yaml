@@ -147,3 +147,9 @@ recipes:
     cron: "0 7 * * 1"
     enabled: true
     notes: weekly webhook reachability probe
+
+  # --- outreach Sender-Gate cut-over -----------------------------------------
+  - name: cut_over_promoter
+    cron: "15 7 * * *"
+    enabled: false
+    notes: shadow-vs-live divergence scan + flip recommendation (enable when shadow data accumulates)
