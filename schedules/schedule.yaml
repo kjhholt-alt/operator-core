@@ -35,6 +35,10 @@ recipes:
     cron: "10 6 * * *"
     enabled: true
     notes: open PR digest
+  - name: weekly_review
+    cron: "0 9 * * 0"
+    enabled: true
+    notes: weekly spot-check of merged PRs with no human review
   - name: ci_triage
     cron: "30 6 * * *"
     enabled: true
@@ -78,9 +82,13 @@ recipes:
     enabled: true
     notes: status-spec component aggregator
   - name: portfolio_health
-    cron: "0 8 * * *"
+    cron: "45 6 * * *"
     enabled: true
-    notes: daily portfolio health dashboard (HTML+MD via templated-dashboards)
+    notes: daily portfolio health dashboard. MUST run before morning_briefing (07:00); briefing reads war-room/portfolio-health.ir.json and stale IR equals yesterday's view.
+  - name: status_sync
+    cron: "*/30 * * * *"
+    enabled: true
+    notes: pull remote status-spec/v1 docs from work machines into local portfolio health
 
   # --- outreach + revenue ----------------------------------------------------
   - name: gate_audit_ingest

@@ -292,13 +292,58 @@ def test_format_writes_html_and_md(tmp_war_room: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_recipe_verify_creates_war_room_dir(tmp_war_room: Path) -> None:
+async def test_recipe_verify_passes_when_dashboards_available(
+    tmp_war_room: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify() must succeed when both war-room dir AND dashboards are present."""
+    import importlib.util as _ilu
+
+    # Force find_spec("dashboards") to return a truthy spec so the test
+    # passes even on hosts where templated-dashboards isn't installed.
+    real_find_spec = _ilu.find_spec
+
+    def fake_find_spec(name, *a, **kw):  # type: ignore[no-untyped-def]
+        if name == "dashboards":
+            return object()  # any non-None
+        return real_find_spec(name, *a, **kw)
+
+    monkeypatch.setattr(_ilu, "find_spec", fake_find_spec)
+
     recipe = MorningBriefing()
     ctx = MagicMock()
     ctx.clients = {}
     ctx.logger = MagicMock()
     ok = await recipe.verify(ctx)
     assert ok is True
+
+
+@pytest.mark.asyncio
+async def test_recipe_verify_fails_when_dashboards_missing(
+    tmp_war_room: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """verify() must FAIL if templated-dashboards isn't importable.
+
+    The old behaviour ("always pass") let scheduled runs through that
+    would then crash at format() time. See bug report 2026-05-06.
+    """
+    import importlib.util as _ilu
+
+    real_find_spec = _ilu.find_spec
+
+    def fake_find_spec(name, *a, **kw):  # type: ignore[no-untyped-def]
+        if name == "dashboards":
+            return None
+        return real_find_spec(name, *a, **kw)
+
+    monkeypatch.setattr(_ilu, "find_spec", fake_find_spec)
+
+    recipe = MorningBriefing()
+    ctx = MagicMock()
+    ctx.clients = {}
+    ctx.logger = MagicMock()
+    ok = await recipe.verify(ctx)
+    assert ok is False
+    ctx.logger.error.assert_called()
 
 
 @pytest.mark.asyncio

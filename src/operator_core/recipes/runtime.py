@@ -157,14 +157,19 @@ class RecipeRunner:
                 "error": result.error,
             },
         )
-        # cost roll-up event
+        # cost roll-up event -- canonical field is `cost_usd` per
+        # events-ndjson/spec/schema/v1/streams/cost.json.
         if result.cost_usd > 0:
             events_ndjson.append_event(
                 stream="cost",
                 kind="recipe_run",
                 recipe=recipe.name,
                 correlation_id=self.correlation_id,
-                payload={"amount_usd": result.cost_usd, "status": result.status},
+                payload={
+                    "cost_usd": result.cost_usd,
+                    "agent": recipe.name,
+                    "status": result.status,
+                },
             )
 
         # status-spec write

@@ -469,11 +469,13 @@ class TestVendorStubs:
         monkeypatch.setenv("OPERATOR_EVENTS_DIR", str(tmp_path / "e"))
         from operator_core._vendor import events_ndjson as en
 
-        en.append_event("cost", "test_kind", recipe="r", correlation_id="c", payload={"amount_usd": 0.5})
+        # Use the canonical cost_usd field (per events-ndjson cost.json schema).
+        en.append_event("cost", "test_kind", recipe="r", correlation_id="c",
+                        payload={"agent": "test", "cost_usd": 0.5})
         rows = en.read_events("cost")
         assert len(rows) == 1
         assert rows[0]["kind"] == "test_kind"
-        assert rows[0]["amount_usd"] == 0.5
+        assert rows[0]["cost_usd"] == 0.5
 
 
 # --- discovered recipes -------------------------------------------------------

@@ -187,3 +187,86 @@ def test_cli_week_invokes_generator_without_network(tmp_path, monkeypatch):
 def test_cli_rejects_unknown_subcommand():
     assert review._cli([]) == 2
     assert review._cli(["wat"]) == 2
+
+
+# --- weekly_review recipe -----------------------------------------------------
+
+def test_weekly_review_classifies_and_sorts_auto_merged_prs(tmp_path, monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from recipes import weekly_review as wr
+
+    monkeypatch.setattr(wr, "WEEKLY_REVIEW_HTML", tmp_path / "weekly-review.html")
+
+    search_rows = {
+        "items": [
+        {
+            "number": 1,
+            "title": "small reviewed",
+            "repository_url": "https://api.github.com/repos/kjhholt-alt/status-spec",
+            "closed_at": "2026-05-05T10:00:00Z",
+            "html_url": "https://example/pr/1",
+        },
+        {
+            "number": 2,
+            "title": "large autonomous merge",
+            "repository_url": "https://api.github.com/repos/kjhholt-alt/operator-core",
+            "closed_at": "2026-05-06T10:00:00Z",
+            "html_url": "https://example/pr/2",
+        },
+        {
+            "number": 3,
+            "title": "medium autonomous merge",
+            "repository_url": "https://api.github.com/repos/kjhholt-alt/portfolio",
+            "closed_at": "2026-05-04T10:00:00Z",
+            "html_url": "https://example/pr/3",
+        },
+        ]
+    }
+
+    def fake_run_gh(args, *, timeout=60.0):
+        if args[:2] == ["api", "search/issues"]:
+            return 0, json.dumps(search_rows), ""
+        if args[:2] == ["api", "repos/kjhholt-alt/status-spec/pulls/1"]:
+            return 0, json.dumps({"additions": 10, "deletions": 2, "changed_files": 1, "merged_at": "2026-05-05T10:00:00Z"}), ""
+        if args[:2] == ["api", "repos/kjhholt-alt/operator-core/pulls/2"]:
+            return 0, json.dumps({"additions": 500, "deletions": 100, "changed_files": 12, "merged_at": "2026-05-06T10:00:00Z"}), ""
+        if args[:2] == ["api", "repos/kjhholt-alt/portfolio/pulls/3"]:
+            return 0, json.dumps({"additions": 100, "deletions": 50, "changed_files": 3, "merged_at": "2026-05-04T10:00:00Z"}), ""
+        if args[0] == "api" and "status-spec/pulls/1/reviews" in args[1]:
+            return 0, json.dumps([{"user": {"login": "reviewer", "type": "User"}}]), ""
+        if args[0] == "api":
+            return 0, "[]", ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(wr, "_run_gh", fake_run_gh)
+    recipe = wr.WeeklyReview()
+    ctx = MagicMock()
+    ctx.logger = MagicMock()
+    data = asyncio.run(recipe.query(ctx))
+    result = asyncio.run(recipe.analyze(ctx, data))
+    body = asyncio.run(recipe.format(ctx, result))
+
+    assert result["total"] == 3
+    assert [pr["number"] for pr in result["auto_merged"]] == [2, 3]
+    assert [pr["number"] for pr in result["human_reviewed"]] == [1]
+    assert "large autonomous merge" in body
+    assert wr.WEEKLY_REVIEW_HTML.exists()
+    assert "Largest auto-merged PRs" in wr.WEEKLY_REVIEW_HTML.read_text(encoding="utf-8")
+
+
+def test_weekly_review_query_tolerates_gh_failure(monkeypatch):
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from recipes import weekly_review as wr
+
+    monkeypatch.setattr(wr, "_run_gh", lambda *a, **kw: (1, "", "offline"))
+    recipe = wr.WeeklyReview()
+    ctx = MagicMock()
+    ctx.logger = MagicMock()
+    data = asyncio.run(recipe.query(ctx))
+    result = asyncio.run(recipe.analyze(ctx, data))
+    assert result["total"] == 0
+    assert result["auto_merged"] == []

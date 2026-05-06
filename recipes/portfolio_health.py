@@ -105,6 +105,11 @@ TRACKED_PROJECTS: list[dict[str, Any]] = [
      "category": "Ops", "status_recipes": []},
     {"name": "portfolio", "dir": "portfolio", "repo": "kjhholt-alt/portfolio",
      "category": "Ops", "status_recipes": []},
+    # --- cross-machine synced status docs ------------------------------------
+    {"name": "ax02-work", "dir": "ax02-work", "repo": "kjhholt-alt/ax02-work",
+     "category": "Workstation", "status_recipes": []},
+    {"name": "ax02-engine", "dir": "ax02-engine", "repo": "kjhholt-alt/ax02-engine",
+     "category": "Workstation", "status_recipes": []},
 ]
 
 
@@ -155,6 +160,61 @@ def _events_dir() -> Path:
 # ----------------------------------------------------------------------------
 # Status-spec / events-ndjson readers
 # ----------------------------------------------------------------------------
+
+_VALID_HEALTH = ("green", "yellow", "red")
+
+# Allowed top-level keys per spec/schema/v1/status.json (`additionalProperties: false`).
+_ALLOWED_TOP_LEVEL = frozenset({
+    "schema_version", "project", "ts", "health",
+    "summary", "subsystems", "counters", "last_event", "links", "extensions",
+})
+
+# project pattern: ASCII alnum + . _ -, length 1..128
+import re as _re
+_PROJECT_RE = _re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+
+# ts pattern: ISO-8601 UTC with Z or +00:00. Match the schema's exact regex.
+_TS_RE = _re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]00:00)$"
+)
+
+
+def _is_valid_status_spec_doc(doc: dict[str, Any]) -> tuple[bool, str]:
+    """Validate a doc against the status-spec/v1 JSON Schema (the parts
+    that matter for safe consumption).
+
+    Checks (matches spec/schema/v1/status.json):
+      - schema_version == "status-spec/v1"
+      - project required, matches ^[A-Za-z0-9._-]{1,128}$
+      - ts required, matches the ISO-8601 UTC pattern
+      - health in {green, yellow, red}
+      - no unknown top-level keys (additionalProperties: false in schema)
+
+    A status-spec/v1 doc that fails any of these is NOT trusted by
+    portfolio_health and is classified as `bad` with a reason naming
+    the violation. Stricter validation (subsystem health enums, counter
+    name patterns, link href schemes) is left to the status-spec
+    validator library when available.
+    """
+    if not isinstance(doc, dict):
+        return False, f"not an object (got {type(doc).__name__})"
+    sv = doc.get("schema_version")
+    if sv != "status-spec/v1":
+        return False, f"schema_version not 'status-spec/v1' (got {sv!r})"
+    project = doc.get("project")
+    if not isinstance(project, str) or not _PROJECT_RE.match(project):
+        return False, f"project missing or doesn't match ^[A-Za-z0-9._-]{{1,128}}$ (got {project!r})"
+    ts = doc.get("ts")
+    if not isinstance(ts, str) or not _TS_RE.match(ts):
+        return False, f"ts missing or wrong shape (got {ts!r})"
+    h = doc.get("health")
+    if h not in _VALID_HEALTH:
+        return False, f"health not in {_VALID_HEALTH} (got {h!r})"
+    extra = set(doc.keys()) - _ALLOWED_TOP_LEVEL
+    if extra:
+        return False, f"unknown top-level keys: {sorted(extra)}"
+    return True, ""
+
 
 def _read_component_status(name: str) -> dict[str, Any] | None:
     """Return the status-spec component dict for ``name`` or None.
@@ -346,15 +406,22 @@ def _classify_health(project: dict[str, Any], status_doc: dict[str, Any] | None,
                      fallback_components: list[dict[str, Any]],
                      last_commit: dict[str, Any] | None) -> tuple[str, str]:
     """Return (tone, reason). Tone is one of good|warn|bad|neutral."""
-    # 1. Project emitted a status-spec/v1 document -> trust its health.
+    # 1. Project emitted a status-spec/v1 document -> trust its health,
+    #    but ONLY if it actually conforms to the v1 contract. A
+    #    non-conforming doc (wrong schema_version, non-tri-state health)
+    #    must not silently classify as "good" -- the emitter is broken.
     if status_doc and "health" in status_doc:
-        h = status_doc.get("health", "")
+        ok, reason = _is_valid_status_spec_doc(status_doc)
+        if not ok:
+            return ("bad", f"invalid status-spec/v1 doc: {reason}")
+        h = status_doc["health"]
+        summary = status_doc.get("summary") or f"status: {h}"
         if h == "green":
-            return ("good", status_doc.get("summary") or "status: green")
+            return ("good", summary)
         if h == "yellow":
-            return ("warn", status_doc.get("summary") or "status: yellow")
+            return ("warn", summary)
         if h == "red":
-            return ("bad", status_doc.get("summary") or "status: red")
+            return ("bad", summary)
 
     # 2. Fallback to associated recipe component statuses.
     bad = [c for c in fallback_components if c.get("status") == "error"]
@@ -444,13 +511,26 @@ def _aggregate(projects_root: Path, gh_available: bool) -> dict[str, Any]:
         })
 
     for ev in cost_window:
-        amt = ev.get("amount_usd") or ev.get("payload", {}).get("amount_usd") or 0.0
+        # Cost stream payload key is `cost_usd` per
+        # events-ndjson/spec/schema/v1/streams/cost.json:8. Real Writer
+        # nests under `payload`; the vendored fallback writer flattens
+        # to top level. Tolerate both shapes, and tolerate legacy
+        # `amount_usd` from events written before 2026-05-06 migration
+        # (runtime.py + integrations/anthropic.py emitters).
+        payload = ev.get("payload") if isinstance(ev.get("payload"), dict) else {}
+        amt = (
+            ev.get("cost_usd")
+            or payload.get("cost_usd")
+            or ev.get("amount_usd")
+            or payload.get("amount_usd")
+            or 0.0
+        )
         try:
-            amt = float(amt)
+            amt = float(amt or 0.0)
         except (TypeError, ValueError):
             amt = 0.0
         total_cost += amt
-        recipe = ev.get("recipe") or "unknown"
+        recipe = ev.get("recipe") or payload.get("recipe") or "unknown"
         cost_by_project[recipe] = cost_by_project.get(recipe, 0.0) + amt
 
     return {

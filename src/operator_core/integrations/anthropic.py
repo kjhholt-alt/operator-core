@@ -82,10 +82,11 @@ class AnthropicAdapter:
             recipe=recipe,
             correlation_id=correlation_id,
             payload={
+                "agent": recipe or "anthropic",
                 "model": model,
                 "input_tokens": in_tok,
                 "output_tokens": out_tok,
-                "amount_usd": cost,
+                "cost_usd": cost,
             },
         )
 

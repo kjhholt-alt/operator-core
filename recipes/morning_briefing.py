@@ -694,10 +694,28 @@ class MorningBriefing(Recipe):
     tags = ("daily", "briefing")
 
     async def verify(self, ctx: RecipeContext) -> bool:
-        # Always pass verify -- we degrade gracefully per section.
-        # Just ensure the war-room dir is writable.
+        # Need war-room dir AND the dashboards renderer importable --
+        # format() does `from dashboards import render`, so a recipe
+        # that passes verify and fails at render is worse than one
+        # that fails verify. Sections degrade gracefully on their
+        # own; the renderer is hard-required.
         WAR_ROOM_DIR.mkdir(parents=True, exist_ok=True)
-        return WAR_ROOM_DIR.exists()
+        if not WAR_ROOM_DIR.exists():
+            ctx.logger.error("morning_briefing.verify.war_room_missing",
+                             extra={"path": str(WAR_ROOM_DIR)})
+            return False
+        try:
+            import importlib.util
+            spec = importlib.util.find_spec("dashboards")
+        except (ImportError, ValueError):
+            spec = None
+        if spec is None:
+            ctx.logger.error(
+                "morning_briefing.verify.dashboards_missing",
+                extra={"hint": "pip install -e ../templated-dashboards"},
+            )
+            return False
+        return True
 
     async def query(self, ctx: RecipeContext) -> dict[str, Any]:
         results = await asyncio.gather(
