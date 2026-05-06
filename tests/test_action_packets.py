@@ -9,6 +9,7 @@ from operator_core.action_packets import (
     action_packet_dir,
     action_packet_kinds,
     action_packet_summary,
+    archive_action_packet,
     claim_action_packet,
     complete_action_packet,
     create_action_packet,
@@ -98,6 +99,20 @@ def test_claim_complete_and_find_by_source_event(tmp_path):
     assert done["done_at"]
     assert find_packet_by_source_event(packet_dir, "event-1") is None
     assert find_packet_by_source_event(packet_dir, "event-1", include_done=True)["id"] == packet["id"]
+
+
+def test_archive_action_packet_hides_from_default_listing(tmp_path):
+    packet_dir = tmp_path / "packets"
+    packet = create_action_packet(kind="next_agent_handoff", packet_dir=packet_dir)
+
+    archived = archive_action_packet(packet["id"], packet_dir, actor="codex", note="cleanup")
+
+    assert archived["archived"] is True
+    assert archived["archived_by"] == "codex"
+    assert list_action_packets(packet_dir) == []
+    all_packets = list_action_packets(packet_dir, include_archived=True)
+    assert all_packets[0]["id"] == packet["id"]
+    assert action_packet_summary(all_packets)["archived_count"] == 1
 
 
 def test_action_packets_reject_unknown_kind_and_status(tmp_path):

@@ -27,6 +27,10 @@ TIMELINE_EVENT_TYPES = (
     "source_gap",
     "decision",
     "motion_signal",
+    "local_commit",
+    "job_event",
+    "hook_block",
+    "launch_prepared",
 )
 
 _TIMELINE_WRITE_LOCK = threading.Lock()
@@ -41,6 +45,8 @@ def recommended_packet_kind(event: dict[str, Any]) -> str:
         return "weekly_review_follow_up"
     if event_type == "source_gap":
         return "source_action_work_order"
+    if event_type in {"job_event", "hook_block"} and severity in {"warn", "high"}:
+        return "codex_implementation_packet"
     if event_type == "agent_checkpoint" and severity in {"warn", "high"}:
         return "autonomy_checkpoint_draft"
     if event_type in {"status_snapshot", "cost_rollup", "motion_signal"} and severity in {"warn", "high"}:
@@ -183,6 +189,10 @@ def _collect_events(state: dict[str, Any]) -> list[dict[str, Any]]:
     events.extend(_source_gap_events(state))
     events.extend(_decision_events(state))
     events.extend(_motion_events(state))
+    events.extend(_git_commit_events(state))
+    events.extend(_job_events(state))
+    events.extend(_hook_block_events(state))
+    events.extend(_launch_events(state))
     return _dedupe(events)
 
 
@@ -419,6 +429,112 @@ def _motion_events(state: dict[str, Any]) -> list[dict[str, Any]]:
         source_path="project-motion-board.json",
         payload=top,
     )]
+
+
+def _git_commit_events(state: dict[str, Any]) -> list[dict[str, Any]]:
+    git = state.get("git_commits") if isinstance(state.get("git_commits"), dict) else {}
+    rows = []
+    for project, commits in git.items():
+        if not isinstance(commits, list):
+            continue
+        for commit in commits:
+            if not isinstance(commit, dict):
+                continue
+            rows.append(_event(
+                project=str(project),
+                ts=str(commit.get("ts") or ""),
+                event_type="local_commit",
+                severity="low",
+                title=f"Commit {str(commit.get('sha') or '')[:7]}",
+                summary=str(commit.get("subject") or ""),
+                source="local-git",
+                source_path=str(commit.get("path") or ""),
+                payload={
+                    "sha": commit.get("sha"),
+                    "author": commit.get("author"),
+                    "subject": commit.get("subject"),
+                },
+            ))
+    return rows
+
+
+def _job_events(state: dict[str, Any]) -> list[dict[str, Any]]:
+    jobs = state.get("jobs") if isinstance(state.get("jobs"), list) else []
+    rows = []
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        status = str(job.get("status") or "unknown").lower()
+        rows.append(_event(
+            project=str(job.get("project") or "operator-core"),
+            ts=str(job.get("updated_at") or job.get("created_at") or ""),
+            event_type="job_event",
+            severity="warn" if status in {"error", "failed", "blocked"} else "low",
+            title=f"Job {status}",
+            summary=str(job.get("action") or ""),
+            source="job-store",
+            source_path=str(job.get("id") or ""),
+            payload={
+                "id": job.get("id"),
+                "action": job.get("action"),
+                "status": job.get("status"),
+                "risk_tier": job.get("risk_tier"),
+                "cost_usd": job.get("cost_usd"),
+                "metadata": job.get("metadata") if isinstance(job.get("metadata"), dict) else {},
+            },
+        ))
+    return rows
+
+
+def _hook_block_events(state: dict[str, Any]) -> list[dict[str, Any]]:
+    hooks = state.get("hook_blocks") if isinstance(state.get("hook_blocks"), list) else []
+    rows = []
+    for item in hooks:
+        if not isinstance(item, dict):
+            continue
+        rows.append(_event(
+            project=str(item.get("project") or "operator-core"),
+            ts=str(item.get("ts") or ""),
+            event_type="hook_block",
+            severity="high",
+            title="Hook blocked command",
+            summary=str(item.get("reason") or item.get("command") or ""),
+            source="hook-log",
+            source_path=str(item.get("path") or ""),
+            payload={
+                "tool_name": item.get("tool_name"),
+                "reason": item.get("reason"),
+                "command": item.get("command"),
+                "session_id": item.get("session_id"),
+            },
+        ))
+    return rows
+
+
+def _launch_events(state: dict[str, Any]) -> list[dict[str, Any]]:
+    launches_root = state.get("agent_launches") if isinstance(state.get("agent_launches"), dict) else {}
+    launches = launches_root.get("items") if isinstance(launches_root.get("items"), list) else []
+    rows = []
+    for launch in launches:
+        if not isinstance(launch, dict):
+            continue
+        rows.append(_event(
+            project=str(launch.get("project") or "operator-core"),
+            ts=str(launch.get("updated_at") or launch.get("created_at") or ""),
+            event_type="launch_prepared",
+            severity="warn" if launch.get("status") == "prepared" else "low",
+            title="Agent launch prepared",
+            summary=str(launch.get("packet_title") or launch.get("packet_id") or ""),
+            source="agent-launches",
+            source_path=str((launch.get("paths") or {}).get("markdown") if isinstance(launch.get("paths"), dict) else ""),
+            payload={
+                "launch_id": launch.get("id"),
+                "packet_id": launch.get("packet_id"),
+                "job_id": launch.get("job_id"),
+                "status": launch.get("status"),
+            },
+        ))
+    return rows
 
 
 def _event(

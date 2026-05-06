@@ -17,6 +17,7 @@ from typing import Any
 
 
 PACKET_STATUSES = ("draft", "ready", "claimed", "done")
+_AUDIT_LOCK_PATH_SUFFIX = ".lock"
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,12 @@ def action_packet_dir(data_dir: Path | None = None) -> Path:
     return base / "action_packets"
 
 
-def list_action_packets(packet_dir: Path, *, limit: int = 50) -> list[dict[str, Any]]:
+def list_action_packets(
+    packet_dir: Path,
+    *,
+    limit: int = 50,
+    include_archived: bool = False,
+) -> list[dict[str, Any]]:
     if not packet_dir.exists():
         return []
     packets: list[dict[str, Any]] = []
@@ -174,6 +180,8 @@ def list_action_packets(packet_dir: Path, *, limit: int = 50) -> list[dict[str, 
         except (OSError, json.JSONDecodeError):
             continue
         if not isinstance(packet, dict):
+            continue
+        if packet.get("archived") and not include_archived:
             continue
         packet.setdefault("paths", {})
         if isinstance(packet["paths"], dict):
@@ -209,12 +217,16 @@ def read_action_packet_audit(packet_dir: Path, *, limit: int = 100) -> list[dict
 
 def action_packet_summary(packets: list[dict[str, Any]]) -> dict[str, Any]:
     by_status = {status: 0 for status in PACKET_STATUSES}
+    archived_count = 0
     for packet in packets:
+        if packet.get("archived"):
+            archived_count += 1
         status = str(packet.get("status") or "draft")
         by_status[status if status in by_status else "draft"] += 1
     return {
         "count": len(packets),
         "by_status": by_status,
+        "archived_count": archived_count,
         "open_count": by_status["draft"] + by_status["ready"] + by_status["claimed"],
     }
 
@@ -262,6 +274,10 @@ def create_action_packet(
         "claimed_by": "",
         "claimed_at": "",
         "done_at": "",
+        "archived": False,
+        "archived_at": "",
+        "archived_by": "",
+        "archive_note": "",
         "context": context or {},
         "status_history": [{
             "ts": now,
@@ -333,6 +349,34 @@ def complete_action_packet(packet_id: str, packet_dir: Path, *, actor: str = "co
     return update_action_packet_status(packet_id, "done", packet_dir, actor=actor or "cockpit", note=note)
 
 
+def archive_action_packet(packet_id: str, packet_dir: Path, *, actor: str = "cockpit", note: str = "") -> dict[str, Any]:
+    packet_id = _clean_packet_id(packet_id)
+    path = packet_dir / f"{packet_id}.json"
+    if not path.exists():
+        raise FileNotFoundError(packet_id)
+    packet = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(packet, dict):
+        raise ValueError("packet metadata is not an object")
+    now = _now()
+    packet["archived"] = True
+    packet["archived_at"] = now
+    packet["archived_by"] = actor or "cockpit"
+    packet["archive_note"] = note
+    packet["updated_at"] = now
+    history = packet.get("status_history") if isinstance(packet.get("status_history"), list) else []
+    history.append({
+        "ts": now,
+        "from": packet.get("status"),
+        "to": "archived",
+        "actor": actor,
+        "note": note,
+    })
+    packet["status_history"] = history[-50:]
+    packet = _write_packet(packet, packet_dir)
+    _append_audit(packet_dir, packet, "archived", actor=actor, note=note)
+    return packet
+
+
 def _write_packet(packet: dict[str, Any], packet_dir: Path) -> dict[str, Any]:
     packet_dir.mkdir(parents=True, exist_ok=True)
     packet_id = _clean_packet_id(str(packet["id"]))
@@ -362,6 +406,8 @@ def _render_markdown(packet: dict[str, Any]) -> str:
         f"- Claimed by: `{packet.get('claimed_by') or ''}`",
         f"- Claimed at: `{packet.get('claimed_at') or ''}`",
         f"- Done at: `{packet.get('done_at') or ''}`",
+        f"- Archived: `{packet.get('archived') or False}`",
+        f"- Archived at: `{packet.get('archived_at') or ''}`",
         "",
         "## Goal",
         "",
@@ -446,14 +492,35 @@ def _append_audit(
         "extra": extra or {},
     }
     path = action_packet_audit_path(packet_dir)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    _append_jsonl(path, entry)
 
 
 def _source_event_id(packet: dict[str, Any]) -> str:
     context = packet.get("context") if isinstance(packet.get("context"), dict) else {}
     source_event = context.get("source_event") if isinstance(context.get("source_event"), dict) else {}
     return str(source_event.get("id") or "")
+
+
+def _append_jsonl(path: Path, entry: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + _AUDIT_LOCK_PATH_SUFFIX)
+    # Best-effort process-local/Windows-friendly append lock. If a stale lock
+    # exists, appending still eventually proceeds on the next lifecycle event.
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        return
+    try:
+        os.close(fd)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    finally:
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
 
 
 def _atomic_write_text(path: Path, body: str) -> None:

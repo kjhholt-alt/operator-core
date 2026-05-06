@@ -93,6 +93,50 @@ def test_project_timeline_normalizes_existing_cockpit_facts(tmp_path):
         },
         "memory_learning": {"decisions": [{"decision": "Cockpit is control surface", "why": "steering"}]},
         "portfolio_motion": {"project_motion": {"top_mover": {"title": "Operator Core", "motion_score": 90, "next_action": "Ship timeline"}}},
+        "jobs": [
+            {
+                "id": "job-1",
+                "action": "agent.launch_prepared",
+                "status": "queued",
+                "project": "operator-core",
+                "updated_at": "2026-05-06T12:10:00Z",
+                "metadata": {"packet_id": "packet-1"},
+            }
+        ],
+        "hook_blocks": [
+            {
+                "ts": "2026-05-06T12:11:00Z",
+                "project": "operator-core",
+                "tool_name": "Bash",
+                "reason": "blocked dangerous command",
+                "command": "rm -rf x",
+            }
+        ],
+        "git_commits": {
+            "operator-core": [
+                {
+                    "sha": "abcdef123456",
+                    "ts": "2026-05-06T12:12:00Z",
+                    "author": "Codex",
+                    "subject": "Add timeline",
+                    "path": str(tmp_path),
+                }
+            ]
+        },
+        "agent_launches": {
+            "items": [
+                {
+                    "id": "launch-1",
+                    "packet_id": "packet-1",
+                    "packet_title": "Review autonomous merge",
+                    "project": "operator-core",
+                    "status": "prepared",
+                    "updated_at": "2026-05-06T12:13:00Z",
+                    "job_id": "job-1",
+                    "paths": {"markdown": str(tmp_path / "launch.md")},
+                }
+            ]
+        },
     }
 
     result = collect_project_timelines(state=state, output_dir=tmp_path / "timelines", write=True)
@@ -101,6 +145,10 @@ def test_project_timeline_normalizes_existing_cockpit_facts(tmp_path):
     assert result["summary"]["risk_count"] >= 4
     assert result["summary"]["actionable_count"] >= 4
     assert result["summary"]["counts_by_type"]["pr_merged_no_review"] == 1
+    assert result["summary"]["counts_by_type"]["job_event"] == 1
+    assert result["summary"]["counts_by_type"]["hook_block"] == 1
+    assert result["summary"]["counts_by_type"]["local_commit"] == 1
+    assert result["summary"]["counts_by_type"]["launch_prepared"] == 1
     assert "operator-core" in result["by_project"]
     assert any(event["type"] == "action_packet" for event in result["by_project"]["operator-core"])
     pr_event = next(event for event in result["by_project"]["operator-core"] if event["type"] == "pr_merged_no_review")
@@ -132,4 +180,5 @@ def test_recommended_packet_kind_rules():
     assert recommended_packet_kind({"type": "status_snapshot", "severity": "high"}) == "codex_implementation_packet"
     assert recommended_packet_kind({"type": "cost_rollup", "severity": "warn"}) == "codex_implementation_packet"
     assert recommended_packet_kind({"type": "agent_checkpoint", "severity": "warn"}) == "autonomy_checkpoint_draft"
+    assert recommended_packet_kind({"type": "hook_block", "severity": "high"}) == "codex_implementation_packet"
     assert recommended_packet_kind({"type": "action_packet", "severity": "warn"}) == ""

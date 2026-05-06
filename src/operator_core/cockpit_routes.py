@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from .action_packets import (
     action_packet_dir,
     action_packet_kinds,
     action_packet_summary,
+    archive_action_packet,
     claim_action_packet,
     complete_action_packet,
     create_action_packet,
@@ -27,6 +29,7 @@ from .action_packets import (
     read_action_packet_audit,
     update_action_packet_status,
 )
+from .agent_launches import agent_launch_dir, launch_summary, list_agent_launches, prepare_agent_launch
 from .http_server import register_extra_route
 from .project_timeline import (
     collect_project_timelines,
@@ -138,6 +141,97 @@ def _status_docs() -> list[dict[str, Any]]:
     return docs
 
 
+def _job_items(job_store: Any | None) -> list[dict[str, Any]]:
+    if job_store is None:
+        return []
+    try:
+        jobs = job_store.list_jobs(limit=100)
+    except Exception:
+        return []
+    rows = []
+    for job in jobs:
+        rows.append({
+            "id": job.id,
+            "action": job.action,
+            "status": job.status,
+            "prompt": job.prompt,
+            "project": job.project,
+            "risk_tier": job.risk_tier,
+            "cost_usd": job.cost_usd,
+            "metadata": job.metadata,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+        })
+    return rows
+
+
+def _hook_blocks(data_dir: Path) -> list[dict[str, Any]]:
+    path = data_dir / "logs" / "hooks.jsonl"
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return rows
+    for line in lines[-300:]:
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict) or not item.get("blocked"):
+            continue
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        rows.append({
+            "ts": item.get("ts") or item.get("created_at") or "",
+            "project": payload.get("project") or "operator-core",
+            "tool_name": item.get("tool_name") or payload.get("tool_name") or metadata.get("tool_name"),
+            "reason": item.get("reason") or metadata.get("reason") or "",
+            "command": metadata.get("command") or payload.get("command") or "",
+            "session_id": item.get("session_id") or payload.get("session_id") or "",
+            "path": str(path),
+        })
+    return rows[-50:]
+
+
+def _git_commits(projects_root: Path, statuses: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    projects = [str(item.get("project") or "") for item in statuses if item.get("project")]
+    projects.extend(["operator-core", "war-room"])
+    out: dict[str, list[dict[str, Any]]] = {}
+    for slug in sorted(set(projects)):
+        path = projects_root / slug
+        if not (path / ".git").exists():
+            continue
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(path), "log", "-n", "3", "--pretty=format:%H%x1f%aI%x1f%an%x1f%s"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode != 0:
+            continue
+        rows = []
+        for line in proc.stdout.splitlines():
+            parts = line.split("\x1f")
+            if len(parts) != 4:
+                continue
+            rows.append({
+                "sha": parts[0],
+                "ts": parts[1],
+                "author": parts[2],
+                "subject": parts[3],
+                "path": str(path),
+            })
+        if rows:
+            out[slug] = rows
+    return out
+
+
 def _portfolio_from_ir(ir: dict[str, Any]) -> dict[str, Any]:
     overview = {}
     sections = ir.get("sections") if isinstance(ir, dict) else []
@@ -155,7 +249,7 @@ def _portfolio_from_ir(ir: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def collect_cockpit_state() -> dict[str, Any]:
+def collect_cockpit_state(job_store: Any | None = None) -> dict[str, Any]:
     war_room = _war_room_dir()
     data_dir = _data_dir()
     status_dir = _status_dir()
@@ -164,6 +258,7 @@ def collect_cockpit_state() -> dict[str, Any]:
     weekly_json_path = war_room / "weekly-review.json"
     cost_path = Path(os.environ.get("OPERATOR_PORTFOLIO_COST_PATH", str(data_dir / "portfolio_cost.json")))
     packets_dir = action_packet_dir(data_dir)
+    launches_dir = agent_launch_dir(data_dir)
 
     portfolio_ir = _read_json(portfolio_ir_path, {})
     weekly_review = _read_json(weekly_json_path, {})
@@ -182,6 +277,11 @@ def collect_cockpit_state() -> dict[str, Any]:
         status_dir=status_dir,
     )
     action_packets = list_action_packets(packets_dir)
+    all_action_packets = list_action_packets(packets_dir, include_archived=True, limit=500)
+    launches = list_agent_launches(launches_dir)
+    jobs = _job_items(job_store)
+    hook_blocks = _hook_blocks(data_dir)
+    git_commits = _git_commits(_projects_root(), statuses)
 
     health_counts = {"green": 0, "yellow": 0, "red": 0, "unknown": 0}
     for doc in statuses:
@@ -196,6 +296,7 @@ def collect_cockpit_state() -> dict[str, Any]:
             "status_dir": str(status_dir),
             "action_packet_dir": str(packets_dir),
             "project_timeline_dir": str(project_timeline_dir(data_dir)),
+            "agent_launch_dir": str(launches_dir),
         },
         "artifacts": {
             "portfolio_health": _artifact_meta(portfolio_ir_path),
@@ -223,8 +324,21 @@ def collect_cockpit_state() -> dict[str, Any]:
             "statuses": list(PACKET_STATUSES),
             "audit": read_action_packet_audit(packets_dir, limit=50),
             "summary": action_packet_summary(action_packets),
+            "hygiene": {
+                "visible_count": len(action_packets),
+                "archived_count": sum(1 for packet in all_action_packets if packet.get("archived")),
+                "done_count": sum(1 for packet in all_action_packets if packet.get("status") == "done"),
+            },
             "items": action_packets,
         },
+        "agent_launches": {
+            "dir": str(launches_dir),
+            "summary": launch_summary(launches),
+            "items": launches,
+        },
+        "jobs": jobs,
+        "hook_blocks": hook_blocks,
+        "git_commits": git_commits,
         "statuses": {
             "count": len(statuses),
             "health_counts": health_counts,
@@ -580,7 +694,9 @@ def _packet_rows(packets: list[dict[str, Any]], statuses: list[str]) -> str:
             f'<td class="mono small">{_esc(packet.get("updated_at"))}</td>'
             f'<td class="mono small">{_esc(paths.get("markdown"))}</td>'
             f'<td><button class="packet-claim" type="button" data-packet-id="{_esc(packet.get("id"))}">Claim</button> '
-            f'<button class="packet-done" type="button" data-packet-id="{_esc(packet.get("id"))}">Done</button></td>'
+            f'<button class="packet-done" type="button" data-packet-id="{_esc(packet.get("id"))}">Done</button> '
+            f'<button class="packet-launch" type="button" data-packet-id="{_esc(packet.get("id"))}">Prep Launch</button> '
+            f'<button class="packet-archive" type="button" data-packet-id="{_esc(packet.get("id"))}">Archive</button></td>'
             "</tr>"
         )
     return "\n".join(rows) or '<tr><td colspan="7" class="empty">No action packets created yet.</td></tr>'
@@ -599,6 +715,22 @@ def _packet_audit_rows(rows_in: list[dict[str, Any]]) -> str:
             "</tr>"
         )
     return "\n".join(rows) or '<tr><td colspan="5" class="empty">No packet audit events yet.</td></tr>'
+
+
+def _launch_rows_compact(launches: list[dict[str, Any]]) -> str:
+    rows = []
+    for launch in launches[:12]:
+        paths = launch.get("paths") if isinstance(launch.get("paths"), dict) else {}
+        rows.append(
+            "<tr>"
+            f'<td>{_esc(launch.get("packet_title"))}<div class="subtle mono">{_esc(launch.get("id"))}</div></td>'
+            f'<td>{_esc(launch.get("project"))}</td>'
+            f'<td>{_esc(launch.get("status"))}</td>'
+            f'<td class="mono">{_esc(launch.get("job_id"))}</td>'
+            f'<td class="mono small">{_esc(paths.get("markdown"))}</td>'
+            "</tr>"
+        )
+    return "\n".join(rows) or '<tr><td colspan="5" class="empty">No launch preparations yet.</td></tr>'
 
 
 def _timeline_rows(events: list[dict[str, Any]]) -> str:
@@ -664,11 +796,13 @@ def _project_packet_rows(packets: list[dict[str, Any]]) -> str:
     return "\n".join(rows) or '<tr><td colspan="6" class="empty">No packets linked to this project.</td></tr>'
 
 
-def _project_payload(state: dict[str, Any], project: str) -> dict[str, Any]:
+def _project_payload(state: dict[str, Any], project: str, filters: dict[str, str] | None = None) -> dict[str, Any]:
     project = project.strip() or "operator-core"
+    filters = filters or {}
     timeline = state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {}
     by_project = timeline.get("by_project") if isinstance(timeline.get("by_project"), dict) else {}
-    events = by_project.get(project, []) if isinstance(by_project.get(project), list) else []
+    all_events = by_project.get(project, []) if isinstance(by_project.get(project), list) else []
+    events = _filter_project_events(all_events, filters)
     packets_root = state.get("action_packets") if isinstance(state.get("action_packets"), dict) else {}
     packets = []
     for packet in packets_root.get("items", []) if isinstance(packets_root.get("items"), list) else []:
@@ -681,9 +815,11 @@ def _project_payload(state: dict[str, Any], project: str) -> dict[str, Any]:
     risky = [event for event in events if isinstance(event, dict) and event.get("severity") in {"warn", "high"}]
     return {
         "project": project,
+        "filters": filters,
         "generated_at": state.get("generated_at"),
         "summary": {
-            "event_count": len(events),
+            "event_count": len(all_events),
+            "filtered_event_count": len(events),
             "risk_count": len(risky),
             "packet_count": len(packets),
             "actionable_count": sum(1 for event in events if isinstance(event, dict) and event.get("actionable")),
@@ -693,11 +829,41 @@ def _project_payload(state: dict[str, Any], project: str) -> dict[str, Any]:
     }
 
 
+def _filter_project_events(events: list[dict[str, Any]], filters: dict[str, str]) -> list[dict[str, Any]]:
+    event_type = str(filters.get("type") or "").strip()
+    risk_only = str(filters.get("risk") or "").lower() in {"1", "true", "yes"}
+    actionable_only = str(filters.get("actionable") or "").lower() in {"1", "true", "yes"}
+    rows = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event_type and event.get("type") != event_type:
+            continue
+        if risk_only and event.get("severity") not in {"warn", "high"}:
+            continue
+        if actionable_only and not event.get("actionable"):
+            continue
+        rows.append(event)
+    return rows
+
+
+def _packet_by_id(packet_id: str, packet_dir: Path) -> dict[str, Any] | None:
+    packet_id = str(packet_id or "")
+    for packet in list_action_packets(packet_dir, limit=1000, include_archived=True):
+        if packet.get("id") == packet_id:
+            return packet
+    return None
+
+
 def render_project_timeline(payload: dict[str, Any]) -> str:
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     events = payload.get("events") if isinstance(payload.get("events"), list) else []
     packets = payload.get("packets") if isinstance(payload.get("packets"), list) else []
     project = str(payload.get("project") or "")
+    filters = payload.get("filters") if isinstance(payload.get("filters"), dict) else {}
+    type_value = str(filters.get("type") or "")
+    risk_checked = "checked" if str(filters.get("risk") or "").lower() in {"1", "true", "yes"} else ""
+    actionable_checked = "checked" if str(filters.get("actionable") or "").lower() in {"1", "true", "yes"} else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -717,9 +883,21 @@ def render_project_timeline(payload: dict[str, Any]) -> str:
   </header>
   <section class="metrics compact">
     {_stat("Events", summary.get("event_count", 0))}
+    {_stat("Filtered", summary.get("filtered_event_count", summary.get("event_count", 0)))}
     {_stat("Risk", summary.get("risk_count", 0), "warn" if summary.get("risk_count", 0) else "")}
     {_stat("Actionable", summary.get("actionable_count", 0), "warn" if summary.get("actionable_count", 0) else "")}
     {_stat("Packets", summary.get("packet_count", 0))}
+  </section>
+  <section class="panel">
+    <div class="panel-head"><h2>Filters</h2><span>project drilldown controls</span></div>
+    <form method="get" action="/cockpit/project" class="filter-form">
+      <input type="hidden" name="project" value="{_esc(project)}">
+      <label>Type <input name="type" value="{_esc(type_value)}" placeholder="e.g. job_event"></label>
+      <label><input type="checkbox" name="risk" value="1" {risk_checked}> Risk only</label>
+      <label><input type="checkbox" name="actionable" value="1" {actionable_checked}> Actionable only</label>
+      <button type="submit">Apply</button>
+      <a class="inline-link" href="/cockpit/project?project={quote(project)}">Clear</a>
+    </form>
   </section>
   <section class="panel">
     <div class="panel-head"><h2>Events</h2><span>{len(events)} local facts</span></div>
@@ -861,7 +1039,11 @@ def render_cockpit(state: dict[str, Any]) -> str:
     packet_items = action_packets.get("items") if isinstance(action_packets.get("items"), list) else []
     packet_kinds = action_packets.get("kinds") if isinstance(action_packets.get("kinds"), list) else []
     packet_audit = action_packets.get("audit") if isinstance(action_packets.get("audit"), list) else []
+    packet_hygiene = action_packets.get("hygiene") if isinstance(action_packets.get("hygiene"), dict) else {}
     packet_statuses = action_packets.get("statuses") if isinstance(action_packets.get("statuses"), list) else list(PACKET_STATUSES)
+    agent_launches = state.get("agent_launches") if isinstance(state.get("agent_launches"), dict) else {}
+    launch_items = agent_launches.get("items") if isinstance(agent_launches.get("items"), list) else []
+    launch_counts = agent_launches.get("summary") if isinstance(agent_launches.get("summary"), dict) else {}
     project_timeline = state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {}
     timeline_summary = project_timeline.get("summary") if isinstance(project_timeline.get("summary"), dict) else {}
     timeline_latest = project_timeline.get("latest") if isinstance(project_timeline.get("latest"), list) else []
@@ -944,6 +1126,8 @@ def render_cockpit(state: dict[str, Any]) -> str:
             <span class="score-pill">ready {_esc(packet_status_counts.get("ready", 0))}</span>
             <span class="score-pill">claimed {_esc(packet_status_counts.get("claimed", 0))}</span>
             <span class="score-pill">done {_esc(packet_status_counts.get("done", 0))}</span>
+            <span class="score-pill">archived {_esc(packet_hygiene.get("archived_count", 0))}</span>
+            <span class="score-pill">launches {_esc(launch_counts.get("count", 0))}</span>
           </div>
           <p class="muted">Local files only. No sends, deletes, external APIs, or remote side effects.</p>
         </div>
@@ -952,6 +1136,8 @@ def render_cockpit(state: dict[str, Any]) -> str:
       <table><thead><tr><th>Packet</th><th>Kind</th><th>Status</th><th>Owner</th><th>Updated</th><th>Markdown</th><th>Controls</th></tr></thead><tbody>{_packet_rows(packet_items, [str(s) for s in packet_statuses])}</tbody></table>
       <div class="panel-subhead"><h3>Packet Audit</h3><span>{len(packet_audit)} recent lifecycle events</span></div>
       <table><thead><tr><th>Time</th><th>Action</th><th>Packet</th><th>Actor</th><th>Note</th></tr></thead><tbody>{_packet_audit_rows(packet_audit)}</tbody></table>
+      <div class="panel-subhead"><h3>Launch Prep</h3><span>{launch_counts.get("prepared_count", 0)} prepared local launch artifacts</span></div>
+      <table><thead><tr><th>Packet</th><th>Project</th><th>Status</th><th>Job</th><th>Markdown</th></tr></thead><tbody>{_launch_rows_compact(launch_items)}</tbody></table>
     </section>
 
     <section class="panel" id="timeline">
@@ -1327,6 +1513,44 @@ document.querySelectorAll('.packet-done').forEach(button => {{
   }});
 }});
 
+document.querySelectorAll('.packet-launch').forEach(button => {{
+  button.addEventListener('click', async () => {{
+    button.textContent = 'prepping...';
+    button.disabled = true;
+    try {{
+      const resp = await fetch('/cockpit/actions/prepare-launch', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{id: button.dataset.packetId, actor: 'cockpit'}}),
+      }});
+      if (!resp.ok) throw new Error('launch prep failed');
+      window.setTimeout(() => window.location.reload(), 400);
+    }} catch (e) {{
+      button.textContent = 'Prep Launch';
+      button.disabled = false;
+    }}
+  }});
+}});
+
+document.querySelectorAll('.packet-archive').forEach(button => {{
+  button.addEventListener('click', async () => {{
+    button.textContent = 'archiving...';
+    button.disabled = true;
+    try {{
+      const resp = await fetch('/cockpit/actions/archive', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{id: button.dataset.packetId, actor: 'cockpit', note: 'archived from cockpit'}}),
+      }});
+      if (!resp.ok) throw new Error('archive failed');
+      window.setTimeout(() => window.location.reload(), 400);
+    }} catch (e) {{
+      button.textContent = 'Archive';
+      button.disabled = false;
+    }}
+  }});
+}});
+
 document.querySelectorAll('.timeline-packet').forEach(button => {{
   button.addEventListener('click', async () => {{
     const original = button.textContent;
@@ -1362,27 +1586,37 @@ document.querySelectorAll('.timeline-packet').forEach(button => {{
 
 def register_cockpit_routes() -> None:
     def _get_cockpit(handler: Any, body: Any) -> tuple[int, str]:
-        return 200, render_cockpit(collect_cockpit_state())
+        return 200, render_cockpit(collect_cockpit_state(handler.server.store))
 
     def _get_cockpit_json(handler: Any, body: Any) -> tuple[int, dict[str, Any]]:
-        return 200, collect_cockpit_state()
+        return 200, collect_cockpit_state(handler.server.store)
 
     def _get_project_timeline(handler: Any, body: Any) -> tuple[int, str]:
         params = parse_qs(urlparse(handler.path).query)
         project = str((params.get("project") or ["operator-core"])[0])
-        return 200, render_project_timeline(_project_payload(collect_cockpit_state(), project))
+        filters = {
+            "type": str((params.get("type") or [""])[0]),
+            "risk": str((params.get("risk") or [""])[0]),
+            "actionable": str((params.get("actionable") or [""])[0]),
+        }
+        return 200, render_project_timeline(_project_payload(collect_cockpit_state(handler.server.store), project, filters))
 
     def _get_project_timeline_json(handler: Any, body: Any) -> tuple[int, dict[str, Any]]:
         params = parse_qs(urlparse(handler.path).query)
         project = str((params.get("project") or ["operator-core"])[0])
-        return 200, _project_payload(collect_cockpit_state(), project)
+        filters = {
+            "type": str((params.get("type") or [""])[0]),
+            "risk": str((params.get("risk") or [""])[0]),
+            "actionable": str((params.get("actionable") or [""])[0]),
+        }
+        return 200, _project_payload(collect_cockpit_state(handler.server.store), project, filters)
 
     def _post_create_action_packet(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         body = body or {}
         kind = str(body.get("kind") or "")
         title = str(body.get("title") or "").strip() or None
         context_summary = str(body.get("context_summary") or "").strip()
-        state = collect_cockpit_state()
+        state = collect_cockpit_state(handler.server.store)
         try:
             packet = create_action_packet(
                 kind=kind,
@@ -1418,9 +1652,40 @@ def register_cockpit_routes() -> None:
             return 400, {"error": "invalid_action_packet", "detail": str(exc)}
         return 200, {"ok": True, "packet": packet}
 
+    def _post_archive_action_packet(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        body = body or {}
+        try:
+            packet = archive_action_packet(
+                str(body.get("id") or ""),
+                action_packet_dir(_data_dir()),
+                actor=str(body.get("actor") or "cockpit"),
+                note=str(body.get("note") or ""),
+            )
+        except FileNotFoundError:
+            return 404, {"error": "packet_not_found"}
+        except ValueError as exc:
+            return 400, {"error": "invalid_action_packet", "detail": str(exc)}
+        return 200, {"ok": True, "packet": packet}
+
+    def _post_prepare_launch(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        body = body or {}
+        packet = _packet_by_id(str(body.get("id") or ""), action_packet_dir(_data_dir()))
+        if packet is None:
+            return 404, {"error": "packet_not_found"}
+        try:
+            launch = prepare_agent_launch(
+                packet,
+                agent_launch_dir(_data_dir()),
+                job_store=handler.server.store,
+                actor=str(body.get("actor") or "cockpit"),
+            )
+        except ValueError as exc:
+            return 400, {"error": "launch_prepare_failed", "detail": str(exc)}
+        return 201, {"ok": True, "launch": launch}
+
     def _post_create_packet_from_timeline(handler: Any, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         body = body or {}
-        state = collect_cockpit_state()
+        state = collect_cockpit_state(handler.server.store)
         event = find_timeline_event(
             state.get("project_timeline") if isinstance(state.get("project_timeline"), dict) else {},
             str(body.get("event_id") or ""),
@@ -1452,6 +1717,8 @@ def register_cockpit_routes() -> None:
     register_extra_route("GET", "/cockpit/project.json", _get_project_timeline_json)
     register_extra_route("POST", "/cockpit/actions/create", _post_create_action_packet)
     register_extra_route("POST", "/cockpit/actions/status", _post_update_action_packet_status)
+    register_extra_route("POST", "/cockpit/actions/archive", _post_archive_action_packet)
+    register_extra_route("POST", "/cockpit/actions/prepare-launch", _post_prepare_launch)
     register_extra_route("POST", "/cockpit/timeline/create-packet", _post_create_packet_from_timeline)
 
 
@@ -1518,9 +1785,12 @@ p { margin: 4px 0 0; }
 .packet-form { display: grid; gap: 8px; }
 .packet-form select, .packet-form input, .packet-form textarea, .packet-status { width: 100%; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 8px; font: inherit; }
 .packet-form textarea { resize: vertical; min-height: 74px; }
-.packet-form button, .timeline-packet, .packet-claim, .packet-done { width: fit-content; border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 8px 12px; cursor: pointer; }
-.packet-form button:hover, .timeline-packet:hover, .packet-claim:hover, .packet-done:hover { background: rgba(110, 168, 255, 0.26); }
-.timeline-packet, .packet-claim, .packet-done { white-space: nowrap; font-size: 12px; padding: 5px 8px; margin: 1px; }
+.filter-form { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.filter-form input[type=text], .filter-form input:not([type]) { border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 7px; font: inherit; }
+.filter-form button { border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 7px 10px; cursor: pointer; }
+.packet-form button, .timeline-packet, .packet-claim, .packet-done, .packet-launch, .packet-archive { width: fit-content; border: 1px solid rgba(110, 168, 255, 0.6); background: rgba(110, 168, 255, 0.16); color: var(--text); padding: 8px 12px; cursor: pointer; }
+.packet-form button:hover, .timeline-packet:hover, .packet-claim:hover, .packet-done:hover, .packet-launch:hover, .packet-archive:hover { background: rgba(110, 168, 255, 0.26); }
+.timeline-packet, .packet-claim, .packet-done, .packet-launch, .packet-archive { white-space: nowrap; font-size: 12px; padding: 5px 8px; margin: 1px; }
 .inline-link { color: var(--accent); text-decoration: none; }
 .inline-link:hover { text-decoration: underline; }
 .score-row { display: flex; flex-wrap: wrap; gap: 8px; }

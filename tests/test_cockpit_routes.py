@@ -717,6 +717,7 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert "Action Packets" in html
             assert "Create Local Packet" in html
             assert "Packet Audit" in html
+            assert "Launch Prep" in html
             assert "Project Timeline" in html
             assert "Action Queue" in html
             assert "agent_checkpoint" in html
@@ -843,18 +844,47 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert done["packet"]["done_at"]
 
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({"id": event_packet_id, "actor": "codex"})
+            conn.request(
+                "POST",
+                "/cockpit/actions/prepare-launch",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            launch = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 201
+            assert launch["launch"]["packet_id"] == event_packet_id
+            assert launch["launch"]["job_id"]
+            assert (cockpit_env["data"] / "agent_launches" / f"{launch['launch']['id']}.md").exists()
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            payload = json.dumps({"id": packet_id, "actor": "codex", "note": "hide completed smoke"})
+            conn.request(
+                "POST",
+                "/cockpit/actions/archive",
+                body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            resp = conn.getresponse()
+            archived = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 200
+            assert archived["packet"]["archived"] is True
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
             conn.request("GET", "/cockpit.json")
             resp = conn.getresponse()
             data = json.loads(resp.read())
             conn.close()
-            assert data["action_packets"]["summary"]["count"] == 2
+            assert data["action_packets"]["summary"]["count"] == 1
             assert data["action_packets"]["summary"]["by_status"]["ready"] == 1
-            assert data["action_packets"]["summary"]["by_status"]["done"] == 1
-            assert len(data["action_packets"]["audit"]) >= 5
-            assert any(
-                event["type"] == "action_packet" and event["payload"]["packet_id"] == packet_id
-                for event in data["project_timeline"]["latest"]
-            )
+            assert data["action_packets"]["hygiene"]["archived_count"] == 1
+            assert data["agent_launches"]["summary"]["prepared_count"] == 1
+            assert data["project_timeline"]["summary"]["counts_by_type"]["job_event"] >= 1
+            assert data["project_timeline"]["summary"]["counts_by_type"]["launch_prepared"] == 1
+            assert len(data["action_packets"]["audit"]) >= 6
             assert any(
                 event["type"] == "action_packet" and event["payload"]["packet_id"] == event_packet_id
                 for event in data["project_timeline"]["latest"]
@@ -877,7 +907,17 @@ def test_cockpit_routes_render_html_and_json(cockpit_env, tmp_path):
             assert resp.status == 200
             assert project_data["project"] == "operator-core"
             assert project_data["summary"]["event_count"] >= 1
+            assert project_data["summary"]["packet_count"] >= 1
             assert any(packet["id"] == event_packet_id for packet in project_data["packets"])
+
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            conn.request("GET", "/cockpit/project.json?project=operator-core&type=launch_prepared")
+            resp = conn.getresponse()
+            filtered = json.loads(resp.read())
+            conn.close()
+            assert resp.status == 200
+            assert filtered["summary"]["filtered_event_count"] == 1
+            assert filtered["events"][0]["type"] == "launch_prepared"
         finally:
             server.shutdown()
             server.server_close()
