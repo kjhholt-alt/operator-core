@@ -688,7 +688,9 @@ class MorningBriefing(Recipe):
     schedule = "0 7 * * *"
     timeout_sec = 300
     discord_channel = "projects"
-    requires_clients = ()  # discord + supabase optional; we degrade gracefully
+    # Need ``discord`` so schtasks-triggered runs get the 7am ping. Supabase
+    # is still optional (waitlist section degrades to error band when absent).
+    requires_clients = ("discord",)
     tags = ("daily", "briefing")
 
     async def verify(self, ctx: RecipeContext) -> bool:
