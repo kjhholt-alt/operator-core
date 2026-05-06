@@ -77,6 +77,10 @@ recipes:
     cron: "*/15 * * * *"
     enabled: true
     notes: status-spec component aggregator
+  - name: portfolio_health
+    cron: "0 8 * * *"
+    enabled: true
+    notes: daily portfolio health dashboard (HTML+MD via templated-dashboards)
 
   # --- outreach + revenue ----------------------------------------------------
   - name: gate_audit_ingest
