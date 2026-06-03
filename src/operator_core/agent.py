@@ -58,6 +58,14 @@ def run_agent(
     `result.error`. Always writes a ledger row (with or without error).
     """
     started = time.monotonic()
+    # Bridge-period cost control (pre-refund): one env var forces a cheaper
+    # model across every recipe that goes through run_agent(). Set
+    # OPERATOR_FORCE_MODEL=claude-haiku-4-5 in operator-core/.env to engage;
+    # remove the line to restore per-caller model selection. Tests never set it.
+    import os as _os
+    _forced_model = _os.environ.get("OPERATOR_FORCE_MODEL", "").strip()
+    if _forced_model:
+        model = _forced_model
     try:
         from claude_agent_sdk import (
             AssistantMessage,
